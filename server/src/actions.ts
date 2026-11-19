@@ -460,8 +460,7 @@ type OkResult = z.infer<typeof okResponse>;
 const sendResponse = z.union([
   z.object({
     ok: z.literal(true),
-    deliveryId: z.number(),
-    status: z.string(),
+    code: z.string(),
   }),
   errorResponse,
 ]);
@@ -476,7 +475,7 @@ const SHA = [privileged.sha256];
 export const Actions = {
   requestSignupCode: defineAction({
     description:
-      "Generates a real 6-digit signup verification code, invalidates any previous pending code for that e-mail (only one active code per address), stores it hashed server-side with a 10-minute expiry, and sends it for real by e-mail (HTML e-mail in the classic verification layout: NEXORA header, greeting, and the code in large digits inside a light box) by SMTP through the nexora.activate@gmail.com Gmail account (Nodemailer, GMAIL_APP_PASSWORD). The delivery row is marked envoye or echec from the SMTP result. The code is never returned to the client. Refuses an e-mail that already has an account ('Cette adresse e-mail est déjà utilisée.') and enforces a 30-second cooldown between two code sends to the same address.",
+      "Generates a 6-digit signup verification code, invalidates any previous pending code for that e-mail (only one active code per address), stores it hashed server-side with a 10-minute expiry, and RETURNS the code to the client so the page can show it on screen (like the old showcase): no e-mail is sent and no Gmail app password is needed. The e-mail address is NOT verified by this flow — anyone can register with any address. Refuses an e-mail that already has an account ('Cette adresse e-mail est déjà utilisée.') and enforces a 30-second cooldown between two code requests for the same address.",
     request: z.object({ email: z.string().max(200) }),
     response: sendResponse,
     privileged: [privileged.randomCode, privileged.sha256],
@@ -524,9 +523,9 @@ export const Actions = {
         return { ok: false, error: "La création du code a échoué. Réessaie." };
       }
       // Un seul code actif par e-mail : tout ancien code encore en attente
-      // est invalidé APRÈS la création du nouveau. Seul le code envoyé dans
-      // le nouvel e-mail pourra créer le compte — aucun autre code, ancien
-      // ou inventé, ne passe.
+      // est invalidé APRÈS la création du nouveau. Seul le code affiché à
+      // l'écran pourra créer le compte — aucun autre code, ancien ou
+      // inventé, ne passe.
       await db
         .update(schema.verificationCodes)
         .set({ usedAt: new Date() })
@@ -537,60 +536,10 @@ export const Actions = {
             ne(schema.verificationCodes.id, codeRow.id),
           ),
         );
-      const insertedDeliveries = await db
-        .insert(schema.emailDeliveries)
-        .values({ email, codeId: codeRow.id, status: "en_cours" })
-        .returning();
-      const delivery = insertedDeliveries[0];
-      if (!delivery) {
-        return { ok: false, error: "L'envoi du code a échoué. Réessaie." };
-      }
-
-      const subject = "Ton code de vérification NEXORA";
-      // E-mail HTML sur le modèle des e-mails de vérification classiques
-      // (type Meta) : en-tête NEXORA, « Bonjour, », une phrase claire, le
-      // code en très gros chiffres espacés dans un encadré gris clair,
-      // puis la phrase d'ignore et un pied de page discret.
-      const htmlBody = [
-        "<!DOCTYPE html>",
-        '<html lang="fr">',
-        "<body style=\"margin:0;padding:0;background-color:#ffffff;\">",
-        '<div style="max-width:600px;margin:0 auto;padding:36px 28px;font-family:Arial,Helvetica,sans-serif;color:#1c1e21;">',
-        '<div style="font-size:30px;font-weight:900;letter-spacing:3px;color:#000000;">NEXORA</div>',
-        '<div style="border-top:1px solid #dddfe2;margin:18px 0 26px;"></div>',
-        '<p style="font-size:16px;margin:0 0 16px;">Bonjour,</p>',
-        '<p style="font-size:16px;line-height:1.5;margin:0 0 22px;">Tu peux créer ton compte NEXORA en entrant le code suivant sur le site :</p>',
-        '<p style="font-size:15px;margin:0 0 8px;">Code de vérification</p>',
-        `<div style="background-color:#f0f2f5;border-radius:8px;padding:22px 24px;font-size:34px;font-weight:700;letter-spacing:10px;color:#1c1e21;">${code}</div>`,
-        '<p style="font-size:16px;line-height:1.5;margin:22px 0 0;">Le code expire dans 10 minutes. Si tu n\'as pas demandé ce code, tu peux ignorer cet e-mail.</p>',
-        '<div style="border-top:1px solid #dddfe2;margin:26px 0 14px;"></div>',
-        '<p style="font-size:12px;line-height:1.5;color:#606770;margin:0;">Ce message a été envoyé par NEXORA à ta demande, pour vérifier ton adresse e-mail lors de la création de ton compte.</p>',
-        "</div>",
-        "</body>",
-        "</html>",
-      ].join("\n");
-
-      // Envoi réel par SMTP (Nodemailer, compte Gmail
-      // nexora.activate@gmail.com) puis marquage de la livraison selon le
-      // résultat : envoye (avec l'heure) ou echec (avec l'erreur SMTP).
-      const sent = await ctx.mailer.send({ to: email, subject, html: htmlBody });
-      const now = new Date();
-      await db
-        .update(schema.emailDeliveries)
-        .set({
-          status: sent.ok ? "envoye" : "echec",
-          error: sent.ok ? "" : sent.error,
-          sentAt: sent.ok ? now : null,
-          updatedAt: now,
-        })
-        .where(eq(schema.emailDeliveries.id, delivery.id));
-      if (!sent.ok) {
-        return {
-          ok: false,
-          error: "L'envoi de l'e-mail a échoué. Réessaie dans un instant.",
-        };
-      }
-      return { ok: true, deliveryId: delivery.id, status: "envoye" };
+      // Pas d'e-mail : le code est renvoyé au client, qui l'affiche à
+      // l'écran (comme sur l'ancienne vitrine). L'adresse e-mail n'est
+      // donc PAS vérifiée par ce parcours.
+      return { ok: true, code };
     },
   }),
 
@@ -646,26 +595,6 @@ export const Actions = {
     },
   }),
 
-  getCodeDeliveryStatus: defineAction({
-    description:
-      "Returns the delivery status of the latest signup-code e-mail for an address: en_cours, envoye, echec, or aucun (none).",
-    request: z.object({ email: z.string().max(200) }),
-    response: z.object({
-      status: z.enum(["en_cours", "envoye", "echec", "aucun"]),
-    }),
-    async handler(ctx, args) {
-      const db = ctx.db<typeof schema>();
-      const email = args.email.trim().toLowerCase();
-      const rows = await db
-        .select()
-        .from(schema.emailDeliveries)
-        .where(eq(schema.emailDeliveries.email, email))
-        .orderBy(desc(schema.emailDeliveries.id))
-        .limit(1);
-      const row = rows[0];
-      return { status: row ? row.status : ("aucun" as const) };
-    },
-  }),
 
   register: defineAction({
     description:

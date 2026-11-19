@@ -543,10 +543,12 @@ function writeCodeCooldown(email: string) {
 function SignupForm({ onAuth }: { onAuth: (token: string) => void }) {
   const i18n = useI18n();
   const { t, te } = i18n;
-  const queryClient = useQueryClient();
   const [step, setStep] = useState<1 | 2>(1);
   const [email, setEmail] = useState("");
   const [typedCode, setTypedCode] = useState("");
+  // Le code affiché à l'écran (comme sur l'ancienne vitrine) : plus
+  // d'envoi par e-mail, le serveur renvoie le code et on le montre ici.
+  const [shownCode, setShownCode] = useState<string | null>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -564,25 +566,14 @@ function SignupForm({ onAuth }: { onAuth: (token: string) => void }) {
     setResendLeft(readCodeCooldown(email));
   }, [email]);
 
-  const delivery = useQuery({
-    queryKey: ["code-delivery", email.trim().toLowerCase()],
-    queryFn: () => api.getCodeDeliveryStatus({ email: email.trim() }),
-    enabled: step === 2,
-    refetchInterval: (query) =>
-      query.state.data?.status === "envoye" || query.state.data?.status === "echec"
-        ? false
-        : 3000,
-  });
-  const deliveryStatus = delivery.data?.status ?? "en_cours";
-
   const requestCode = useMutation({
     mutationFn: async () => await api.requestSignupCode({ email: email.trim() }),
     onSuccess: (res) => {
       if (res.ok) {
+        setShownCode(res.code);
         writeCodeCooldown(email);
         setStep(2);
         setResendLeft(30);
-        void queryClient.invalidateQueries({ queryKey: ["code-delivery"] });
       } else {
         // Le serveur a refusé (par exemple le cooldown de 30 s) :
         // on resynchronise le compte à rebours affiché avec lui.
@@ -679,20 +670,11 @@ function SignupForm({ onAuth }: { onAuth: (token: string) => void }) {
       <h2 className="text-xl font-extrabold">{t("signupTitle")}</h2>
       <p className="text-sm font-bold text-[var(--dim)]">{t("step2")}</p>
 
-      {deliveryStatus === "envoye" ? (
-        <div className="rounded-xl bg-[#23a55a]/15 px-4 py-3 text-sm">
-          <p className="font-bold text-[#3fd68c]">{t("codeSentTitle", { email })}</p>
-          <p className="mt-1 text-[var(--dim)]">{t("codeSentBody")}</p>
-        </div>
-      ) : deliveryStatus === "echec" ? (
-        <div className="rounded-xl bg-[#f23f43]/15 px-4 py-3 text-sm">
-          <p className="font-bold text-[#ff8589]">{t("codeFailedTitle")}</p>
-          <p className="mt-1 text-[var(--dim)]">{t("codeFailedBody")}</p>
-        </div>
-      ) : (
+      {shownCode && (
         <div className="rounded-xl bg-white/10 px-4 py-3 text-sm">
-          <p className="font-bold">{t("codeSendingTitle", { email })}</p>
-          <p className="mt-1 text-[var(--dim)]">{t("codeSendingBody")}</p>
+          <p className="font-bold">{t("codeShownTitle")}</p>
+          <p className="mt-2 text-center text-3xl font-black tracking-[0.3em]">{shownCode}</p>
+          <p className="mt-2 text-[var(--dim)]">{t("codeShownBody")}</p>
         </div>
       )}
 
@@ -708,11 +690,7 @@ function SignupForm({ onAuth }: { onAuth: (token: string) => void }) {
           onChange={(e) => setTypedCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
           placeholder="123456"
           className={`${inputCls} text-center text-xl font-bold tracking-[0.3em]`}
-          aria-describedby="signup-code-spam-hint"
         />
-        <p id="signup-code-spam-hint" className="mt-2 text-sm font-medium text-[var(--dim)]">
-          {t("codeSpamHint")}
-        </p>
       </div>
       <div>
         <label htmlFor="signup-username" className={labelCls}>{t("usernameLabel")}</label>
