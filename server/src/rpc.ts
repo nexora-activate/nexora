@@ -2,11 +2,11 @@
 //
 // La même logique sert les deux points d'entrée du serveur :
 //   - le serveur local de développement (server/src/index.ts),
-//   - la fonction serverless Vercel (api/actions.ts).
+//   - la Netlify Function (netlify/functions/actions.ts).
 // Corps JSON attendu : { action, args }. Réponse : { data } en cas de
 // succès, { error, issues? } sinon — le format que le client
 // (client/src/api.ts) consomme. Aucune API Bun ici : ce module tourne
-// tel quel sous Node.js (runtime Vercel).
+// tel quel sous Node.js (runtime Netlify).
 
 import { Actions } from "./actions";
 import { createCtx } from "./ctx";

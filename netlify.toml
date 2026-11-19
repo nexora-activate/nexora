@@ -1,0 +1,46 @@
+# NEXORA — configuration Netlify (plan gratuit, sans carte bancaire).
+#
+# Le client React est construit par Bun pendant le build, puis servi en
+# fichiers statiques depuis client/dist. La RPC POST /actions et la
+# sonde GET /healthz tournent dans des Netlify Functions Node.js
+# (netlify/functions/). Aucun serveur persistant.
+#
+# Déploiement : créer un NOUVEAU site Netlify à partir du dépôt GitHub
+# (ne JAMAIS toucher au site de la vitrine existante,
+# nexora-activate94190.netlify.app). Netlify lit ce fichier tout seul :
+# rien à régler à la main dans le tableau de bord, sauf les variables
+# d'environnement (voir README.md et .env.example).
+
+[build]
+  # Installe Bun (nécessaire pour construire le client : bun-plugin-tailwind),
+  # installe les dépendances, puis construit le client dans client/dist.
+  command = "curl -fsSL https://bun.sh/install | bash -s bun-v1.3.10 && export PATH=\"$HOME/.bun/bin:$PATH\" && bun install && bun run build:client"
+  publish = "client/dist"
+  functions = "netlify/functions"
+
+[build.environment]
+  # Les fonctions tournent sur Node.js 22 (le code serveur est 100 %
+  # Node standard, sans API Bun).
+  AWS_LAMBDA_JS_RUNTIME = "nodejs22.x"
+
+# RPC des actions : POST /actions -> fonction Netlify (réécriture
+# interne, l'adresse visible ne change pas).
+[[redirects]]
+  from = "/actions"
+  to = "/.netlify/functions/actions"
+  status = 200
+
+# Sonde de santé : GET /healthz -> fonction Netlify.
+[[redirects]]
+  from = "/healthz"
+  to = "/.netlify/functions/healthz"
+  status = 200
+
+# Repli SPA : toute autre adresse sert l'application (le retour OAuth
+# Discord, par exemple, arrive sur l'adresse du site avec ?code&state).
+# Netlify sert d'abord les fichiers statiques existants (assets, etc.),
+# cette règle ne s'applique qu'aux adresses sans fichier.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

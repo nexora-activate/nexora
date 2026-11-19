@@ -11,9 +11,9 @@
 // process.env.PORT (défaut 3000). La base est le Postgres de
 // DATABASE_URL (Supabase) ; les migrations SQL de ./drizzle sont
 // appliquées au démarrage quand la base est joignable (idempotent).
-// En production sur Vercel, ce fichier ne sert pas : le client est
-// servi en fichiers statiques et /actions est une fonction serverless
-// (api/actions.ts) qui partage le même handler (server/src/rpc.ts).
+// En production sur Netlify, ce fichier ne sert pas : le client est
+// servi en fichiers statiques et /actions est une Netlify Function
+// (netlify/functions/actions.ts) qui partage le même handler (server/src/rpc.ts).
 // Variables d'environnement documentées dans .env.example.
 
 import { existsSync, statSync } from "node:fs";
@@ -69,7 +69,7 @@ async function readBody(req: IncomingMessage): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// RPC POST /actions — même handler que la fonction Vercel (server/src/rpc.ts)
+// RPC POST /actions — même handler que la Netlify Function (server/src/rpc.ts)
 // ---------------------------------------------------------------------------
 
 async function handleActions(req: IncomingMessage, res: ServerResponse): Promise<void> {

@@ -4,7 +4,7 @@
 // is sent straight to discord.com from the server and never reaches the
 // client or any action response).
 //
-// VERCEL — pas de SDK externe : les deux petits helpers ci-dessous
+// NETLIFY — pas de SDK externe : les deux petits helpers ci-dessous
 // (definePrivilegedContracts / definePrivilegedHandlers) remplacent
 // ceux de @hatch/space-sdk, dont ce serveur autonome n'a plus besoin.
 // Un contrat = un nom + un schéma de requête + un schéma de réponse ;
