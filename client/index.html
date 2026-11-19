@@ -31,20 +31,36 @@
       style="position: fixed; inset: 0; z-index: 9999; background: #000000; color: #ffffff; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif"
     >
       <p style="margin: 0; font-size: 34px; font-weight: 900; letter-spacing: 1px">NEXORA</p>
-      <p style="margin: 0; font-size: 16px; color: #a7a7ae">Chargement… / Loading…</p>
+      <p style="margin: 0; font-size: 16px; color: #a7a7ae"><span data-boot-lang="fr">Chargement…</span><span data-boot-lang="sep"> / </span><span data-boot-lang="en">Loading…</span></p>
       <p id="nexora-boot-help" style="display: none; margin: 10px 0 0; max-width: 340px; font-size: 15px; line-height: 1.5; color: #ffffff">
-        Le site met du temps à démarrer sur ton téléphone.
-        <br />
-        The site is taking too long to start on your phone.
+        <span data-boot-lang="fr">Le site met du temps à démarrer sur ton téléphone.</span><span data-boot-lang="sep"><br /></span><span data-boot-lang="en">The site is taking too long to start on your phone.</span>
       </p>
       <button
         id="nexora-boot-reload"
         type="button"
         style="display: none; margin-top: 8px; min-height: 48px; padding: 12px 26px; border: 0; border-radius: 12px; background: #ffffff; color: #000000; font-size: 16px; font-weight: 700; cursor: pointer"
       >
-        Recharger / Reload
+        <span data-boot-lang="fr">Recharger</span><span data-boot-lang="sep"> / </span><span data-boot-lang="en">Reload</span>
       </button>
     </div>
+    <script>
+      // Langue de l'écran de démarrage : si l'utilisateur a déjà choisi
+      // français ou anglais sur le site, on n'affiche que cette langue
+      // (avant, l'écran montrait toujours les deux, français d'abord).
+      // Sinon on garde les deux, comme avant.
+      (function () {
+        var lang = null;
+        try {
+          lang = localStorage.getItem("nexora-lang");
+        } catch (e) {}
+        if (lang !== "fr" && lang !== "en") return;
+        var hide = lang === "fr" ? "en" : "fr";
+        var els = document.querySelectorAll(
+          '[data-boot-lang="' + hide + '"], [data-boot-lang="sep"]',
+        );
+        for (var i = 0; i < els.length; i++) els[i].style.display = "none";
+      })();
+    </script>
     <noscript>
       <div style="position: fixed; inset: 0; z-index: 10000; background: #000000; color: #ffffff; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; font-family: system-ui, sans-serif; font-size: 16px; line-height: 1.5">
         NEXORA a besoin de JavaScript pour fonctionner. Active JavaScript

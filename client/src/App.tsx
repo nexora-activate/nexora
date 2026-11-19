@@ -281,7 +281,7 @@ function LanguagePicker() {
 // ---------------------------------------------------------------------------
 // Bouton « Se connecter avec Discord » : démarre le vrai flux OAuth2
 // (action startDiscordLogin) et ouvre l'adresse d'autorisation Discord
-// dans un nouvel onglet (Discord refuse l'affichage dans un cadre).
+// dans le même onglet (Discord refuse l'affichage dans un cadre).
 // Discord renvoie ensuite l'utilisateur sur l'adresse de retour
 // enregistrée, avec ?code=&state= dans l'adresse : la racine de l'app
 // termine la connexion (voir Root). Si la configuration Discord n'est
@@ -302,7 +302,12 @@ function DiscordButton({ token }: { token?: string }) {
     onSuccess: (res) => {
       if (res.ok) {
         setAuthUrl(res.url);
-        window.open(res.url, "_blank", "noopener,noreferrer");
+        // Même onglet (pas de nouvel onglet) : sur téléphone, un nouvel
+        // onglet rend le retour plus lent et l'écran de chargement reste
+        // affiché ; ici l'onglet a déjà le site en mémoire, donc le retour
+        // Discord redémarre vite. Discord refuse l'affichage dans un
+        // cadre, mais une navigation normale dans l'onglet marche.
+        window.location.assign(res.url);
       } else {
         setError(te(res.error));
       }
