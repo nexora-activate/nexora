@@ -67,7 +67,7 @@
 // annuelle, so the bot can assign the matching Discord roles.
 
 import { defineAction, z, type ActionsModule, type Ctx } from "./framework";
-import { privileged } from "@space/privileged";
+import { privileged } from "./privileged";
 import { and, desc, eq, isNull, ne } from "drizzle-orm";
 import * as schema from "./schema";
 

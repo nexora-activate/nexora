@@ -4,12 +4,13 @@
 // is sent straight to discord.com from the server and never reaches the
 // client or any action response).
 //
-// The contracts are declared here with the platform's define helpers
-// (the build pipeline extracts them into .generated/privileged.contract
-// for the action code, which imports the descriptors from
-// "@space/privileged"). In the standalone server the same handlers run
-// in-process: the context (./ctx.ts) dispatches
-// ctx.executePrivileged(contract, args) to them by contract name.
+// VERCEL — pas de SDK externe : les deux petits helpers ci-dessous
+// (definePrivilegedContracts / definePrivilegedHandlers) remplacent
+// ceux de @hatch/space-sdk, dont ce serveur autonome n'a plus besoin.
+// Un contrat = un nom + un schéma de requête + un schéma de réponse ;
+// un handler = une fonction qui reçoit les arguments validés. Le
+// contexte (./ctx.ts) dispatche ctx.executePrivileged(contract, args)
+// vers le handler du même nom.
 
 import {
   createHash,
@@ -18,12 +19,80 @@ import {
   scryptSync,
   timingSafeEqual,
 } from "node:crypto";
-import {
-  definePrivilegedContracts,
-  definePrivilegedHandlers,
-  z,
-} from "@hatch/space-sdk";
+import { z } from "zod";
 import { probeDatabase } from "./db";
+
+export { z };
+
+type PrivilegedContractSpec = {
+  request: z.ZodType;
+  response: z.ZodType;
+  capabilities?: readonly string[];
+  timeoutMs?: number;
+};
+
+// Le type d'un contrat garde les schémas Zod exacts déclarés : ainsi
+// ctx.executePrivileged(contrat, args) renvoie le type inféré de la
+// réponse (par ex. { hash: string }) au lieu de `unknown`.
+export type PrivilegedContractFor<
+  Req extends z.ZodType = z.ZodType,
+  Res extends z.ZodType = z.ZodType,
+> = {
+  __brand: "@nexora/privileged-contract/v1";
+  name: string;
+  request: Req;
+  response: Res;
+  capabilities?: readonly string[];
+  timeoutMs?: number;
+};
+
+export type PrivilegedContract = PrivilegedContractFor<z.ZodType, z.ZodType>;
+
+export function definePrivilegedContracts<const Specs extends Record<string, PrivilegedContractSpec>>(
+  specs: Specs,
+): { [K in keyof Specs]: PrivilegedContractFor<Specs[K]["request"], Specs[K]["response"]> } {
+  const contracts = {} as Record<string, PrivilegedContract>;
+  for (const [name, spec] of Object.entries(specs)) {
+    contracts[name] = {
+      __brand: "@nexora/privileged-contract/v1",
+      name,
+      request: spec.request,
+      response: spec.response,
+      ...(spec.capabilities !== undefined
+        ? { capabilities: spec.capabilities }
+        : {}),
+      ...(spec.timeoutMs !== undefined ? { timeoutMs: spec.timeoutMs } : {}),
+    };
+  }
+  return contracts as { [K in keyof Specs]: PrivilegedContractFor<Specs[K]["request"], Specs[K]["response"]> };
+}
+
+export function definePrivilegedHandlers<
+  Contracts extends Record<string, PrivilegedContract>,
+>(
+  contracts: Contracts,
+  handlers: {
+    [K in keyof Contracts]?: (
+      args: z.infer<Contracts[K]["request"]>,
+    ) =>
+      | z.infer<Contracts[K]["response"]>
+      | Promise<z.infer<Contracts[K]["response"]>>;
+  },
+): {
+  format: "nexora-privileged-handlers-v1";
+  entries: { contract: PrivilegedContract; handler: (args: never) => unknown }[];
+} {
+  const entries: { contract: PrivilegedContract; handler: (args: never) => unknown }[] = [];
+  for (const [key, handler] of Object.entries(handlers)) {
+    if (handler === undefined) continue;
+    const contract = contracts[key];
+    if (!contract || contract.__brand !== "@nexora/privileged-contract/v1") {
+      throw new Error(`privileged handler '${key}' does not have a contract descriptor`);
+    }
+    entries.push({ contract, handler: handler as (args: never) => unknown });
+  }
+  return { format: "nexora-privileged-handlers-v1", entries };
+}
 
 export const privileged = definePrivilegedContracts({
   sha256: {

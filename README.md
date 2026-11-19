@@ -1,101 +1,160 @@
-# NEXORA — Déploiement sur Render (gratuit)
+# NEXORA — version Vercel (plan Hobby, gratuit, sans carte bancaire)
 
-La plateforme NEXORA, en vrai serveur Node autonome. Elle tourne avec une
-base Supabase (Postgres) et envoie ses e-mails en SMTP via Gmail.
+Plateforme NEXORA (ex-SnikoLabs, v29) adaptée pour **Vercel** : le client
+React est servi en fichiers statiques, et la RPC `POST /actions` tourne
+dans une fonction serverless Node.js (`api/actions.ts`). Aucun serveur
+persistant, aucune carte bancaire : le plan Hobby de Vercel est gratuit.
 
-## Ce qu'il te faut avant de commencer
+La vitrine Netlify (https://nexora-activate94190.netlify.app) reste en
+ligne telle quelle : ce dépôt, c'est la **plateforme** (comptes, offres,
+connexion Discord), pas la vitrine.
 
-- Un compte Render gratuit (render.com, pas besoin de carte bancaire).
-- Un compte GitHub (pour mettre le code, Render le récupère depuis GitHub).
-- Ton projet Supabase « Nexora » (déjà créé).
-- Ton application Discord « sniko » (Client ID `1571508442114560112`).
+## Ce qui est dedans
 
-## Étape 1 — Mettre le code sur GitHub
+- `client/` — l'application React (5 langues, thème noir et blanc).
+  Construite par Bun pendant le build Vercel (`bun ./client/build.mjs`),
+  servie ensuite en fichiers statiques depuis `client/dist`.
+- `api/actions.ts` — la fonction serverless Vercel : `POST /actions`,
+  le même handler RPC que le serveur local (`server/src/rpc.ts`).
+- `api/healthz.ts` — `GET /healthz`, répond `{ ok: true }`.
+- `server/src/` — les actions (comptes, codes 6 chiffres, Discord OAuth,
+  offres, `getDiscordRoles`, Patron, support), la base Drizzle/Postgres,
+  l'envoi SMTP Gmail. **Aucune API Bun** : ce code tourne sous Node.js.
+- `drizzle/` — les migrations SQL Postgres 0001 à 0007 (idempotentes).
+- `vercel.json` — build (installe Bun, construit le client), rewrites
+  (`/actions` → fonction, repli SPA vers `index.html`).
 
-1. Va sur github.com et crée un dépôt (par exemple `nexora`). Il peut être
-   privé, ça marche pareil.
-2. Dans le dépôt, clique sur « Add file » puis « Upload files ».
-3. Glisse TOUS les fichiers et dossiers de ce ZIP dans la page (pas le ZIP
-   lui-même, son contenu). Attends que tout soit envoyé, puis « Commit ».
+Fonctionnalités conservées : inscription en 2 étapes avec vrai code à
+6 chiffres par e-mail, connexion e-mail + Discord OAuth2 (application
+« sniko », Client ID `1571508442114560112`, scope `identify`, échange du
+code côté serveur), offres par utilisateur + badges (free par défaut,
+premium, premium+, annuelle ; durées 24 h / 30 j / 150 j / 365 j),
+`getDiscordRoles` pour le bot (clé `NEXORA_API_KEY`), Patron réservé à
+l'e-mail `isaac.201294dz@gmail.com`, easter egg « voleur » si le pseudo
+est « sniko », support et demandes de serveur par e-mail, 5 langues.
 
-## Étape 2 — Créer le service sur Render
+## 1. Mettre le code sur GitHub
 
-1. Va sur render.com, connecte-toi, clique sur « New + » puis
-   « Web Service ».
-2. Choisis ton dépôt GitHub `nexora`.
-3. Remplis comme ça :
-   - **Name** : `nexora`
-   - **Region** : Frankfurt (Europe) de préférence.
-   - **Branch** : `main`
-   - **Build Command** : `bun install && bun run build`
-   - **Start Command** : `bun run start`
-   - **Instance Type** : `Free`
-4. Clique sur « Create Web Service ». Le premier déploiement démarre.
+Le dépôt `nexora-activate/nexora` existe déjà (code version Render).
+Remplace son contenu par ce dossier (branche `main`) : le plus simple
+est de glisser-déposer les fichiers dans l'interface GitHub, ou en
+ligne de commande depuis ce dossier :
 
-(Si tu utilises le fichier `render.yaml` de ce ZIP, Render peut aussi
-détecter la configuration tout seul avec « New + » → « Blueprint ».)
+```bash
+git init
+git add .
+git commit -m "NEXORA — version Vercel"
+git branch -M main
+git remote add origin https://github.com/nexora-activate/nexora.git
+git push -u origin main --force
+```
 
-## Étape 3 — Les 5 variables d'environnement
+## 2. Importer dans Vercel
 
-Sur la page du service, va dans « Environment » puis « Add Environment
-Variable ». Ajoute ces 5 variables (les valeurs ne sont JAMAIS à mettre
-dans le code, seulement ici) :
+1. Va sur https://vercel.com/new et connecte-toi avec GitHub
+   (compte `nexora-activate`).
+2. Choisis le dépôt `nexora-activate/nexora` > **Import**.
+3. Vercel détecte tout seul : Build Command et Output Directory sont
+   déjà dans `vercel.json` (rien à changer). Framework Preset : Other.
+4. Ne clique pas encore sur **Deploy** : d'abord les variables
+   d'environnement (étape 3), puis **Deploy**.
 
-| Variable | Valeur | Où la trouver |
-|---|---|---|
-| `DATABASE_URL` | `postgresql://postgres:[MOT-DE-PASSE]@db.lbqnfrqsgyvhltkbnqlg.supabase.co:5432/postgres` | Remplace `[MOT-DE-PASSE]` par le mot de passe de ta base Supabase (celui que tu as défini dans Supabase > Database Settings > Reset database password). |
-| `DISCORD_CLIENT_SECRET` | Le secret de ton appli Discord | Portail développeur Discord (discord.com/developers) > ton appli « sniko » > OAuth2 > Client Secret (« Reset Secret » si tu ne l'as plus). |
-| `DISCORD_REDIRECT_URI` | `https://<ton-site-render>/auth/discord/callback` | Remplace `<ton-site-render>` par l'adresse que Render te donne (ex. `https://nexora-xxxx.onrender.com`). Elle doit être EXACTEMENT la même ici et dans le portail Discord (OAuth2 > Redirects). |
-| `NEXORA_API_KEY` | Une longue clé au hasard, que tu choisis | Invente une longue chaîne de lettres et chiffres. Elle doit être IDENTIQUE ici et dans les variables du bot Discord « sniko bot ». |
-| `GMAIL_APP_PASSWORD` | Le mot de passe d'application Gmail | Compte Google nexora.activate@gmail.com > Sécurité > Mots de passe d'application > crée-en un pour « NEXORA ». Sans lui, aucun code d'inscription ne partira par e-mail. |
+## 3. Variables d'environnement
 
-Après avoir ajouté les variables, clique sur « Save Changes » : Render
-redéploie tout seul.
+Dans le projet Vercel : **Settings > Environment Variables**
+(cocher **Production** pour chacune). Les valeurs exactes sont dans
+`.env.example` — ne mets JAMAIS de vraie valeur dans le code.
 
-## Étape 4 — Tester
+| Variable | Valeur |
+|---|---|
+| `DATABASE_URL` | URI du **pooler** Supabase (voir ci-dessous) |
+| `DISCORD_CLIENT_SECRET` | Secret Discord (à réinitialiser dans le portail développeur, il n'est pas copiable) |
+| `DISCORD_REDIRECT_URI` | `https://<ton-projet>.vercel.app/auth/discord/callback` |
+| `NEXORA_API_KEY` | Longue chaîne aléatoire (32 caractères ou plus), la même que côté bot |
+| `GMAIL_APP_PASSWORD` | Mot de passe d'application Gmail de nexora.activate@gmail.com |
 
-1. Ouvre l'adresse du site (ex. `https://nexora-xxxx.onrender.com`).
-2. Crée un compte avec ton e-mail : tu dois recevoir un code à 6 chiffres
-   par e-mail.
-3. Teste le bouton « Se connecter avec Discord » : il doit ouvrir Discord
-   et revenir sur le site avec ton pseudo et ton avatar.
-4. Si le bouton dit « Discord login not configured », c'est que
-   `DISCORD_CLIENT_SECRET` ou `DISCORD_REDIRECT_URI` manque ou n'est pas
-   identique au portail Discord.
+**DATABASE_URL — très important.** En serverless, il faut l'URI du
+**pooler** Supabase, pas la connexion directe :
+Supabase > dashboard du projet **nexora** > bouton **Connect** >
+onglet **Transaction pooler** > copier l'URI (port `6543`, avec
+`?pgbouncer=true`). La connexion directe (`db.<ref>.supabase.co:5432`)
+utilise IPv6 et ne marche pas de façon fiable depuis Vercel.
 
-## Pour que le bot synchronise les offres
+**DISCORD_REDIRECT_URI** doit être enregistrée **à l'identique** dans
+le portail développeur Discord (application « sniko » >
+OAuth2 > Redirects > Add Redirect), sinon le login Discord échoue.
 
-Dans les variables d'environnement du service qui fait tourner
-« sniko bot », ajoute aussi :
-- `NEXORA_API_URL` = l'adresse de ton site Render
-  (ex. `https://nexora-xxxx.onrender.com`)
-- `NEXORA_API_KEY` = la MÊME clé que sur Render.
+## 4. Appliquer les migrations (une fois, en local)
 
-Le bot ira alors chercher les offres des utilisateurs sur le site et
-donnera les rôles Discord automatiquement. En attendant, les offres se
-gèrent avec la commande `/setplan` sur Discord.
+En serverless, les migrations ne tournent pas au démarrage. Il faut
+les appliquer **une fois** contre Supabase, depuis un ordinateur, avec
+l'URI **directe** (le pooler ne supporte pas les migrations) :
 
-## À savoir
+```bash
+npm install
+DATABASE_URL="postgresql://postgres:<mot-de-passe-base>@db.<ref-projet>.supabase.co:5432/postgres" npx drizzle-kit migrate
+```
 
-- **Le gratuit s'endort** : après 15 minutes sans visite, le serveur
-  s'endort. La première visite après met 30 à 60 secondes à se réveiller.
-  C'est normal, ce n'est pas une panne. Les données restent en sécurité
-  sur Supabase.
-- **La vitrine Netlify ne change pas** : le site
-  `nexora-activate94190.netlify.app` reste en ligne tel quel. Ce
-  déploiement Render, c'est la vraie plateforme (comptes, connexion
-  Discord, offres).
-- **Ne partage jamais** `DISCORD_CLIENT_SECRET`, `NEXORA_API_KEY`,
-  `GMAIL_APP_PASSWORD` ni le mot de passe de ta base dans un message
-  normal : ils se mettent uniquement dans les variables d'environnement
-  de Render (ou dans le coffre sécurisé pour me les transmettre).
+C'est idempotent : relancer la commande ne recrée rien. Sans cette
+étape, la première action qui touche la base répondra une erreur.
 
-## En cas de problème
+## 5. Déployer et tester
 
-- Le site affiche une erreur au démarrage : regarde les « Logs » du service
-  sur Render, l'erreur y est écrite. Vérifie surtout que les 5 variables
-  sont bien définies.
-- `DATABASE_URL is not set` : la variable `DATABASE_URL` manque ou est
-  vide.
-- Les e-mails n'arrivent pas : vérifie `GMAIL_APP_PASSWORD` (il faut un
-  mot de passe d'application, pas le mot de passe du compte Google).
+1. Dans Vercel : **Deployments > Redeploy** (si les variables ont été
+   ajoutées après le premier déploiement).
+2. Ouvre `https://<ton-projet>.vercel.app/` : la page NEXORA s'affiche.
+3. Ouvre `https://<ton-projet>.vercel.app/healthz` : `{"ok":true}`.
+4. Teste l'inscription : crée un compte, reçois le code à 6 chiffres
+   par e-mail, vérifie-le. Sans `GMAIL_APP_PASSWORD`, le code ne part
+   pas et l'inscription l'indique proprement.
+5. Teste le login Discord : clique sur « Se connecter avec Discord »,
+   autorise, le pseudo + avatar apparaissent sur le profil. Si le
+   bouton dit « Discord login not configured », c'est que
+   `DISCORD_CLIENT_SECRET` ou `DISCORD_REDIRECT_URI` manque ou que
+   l'URI n'est pas enregistrée dans le portail Discord.
+
+## 6. Brancher le bot Discord
+
+Dans l'environnement du service `sniko-bot` :
+
+- `NEXORA_API_URL` = `https://<ton-projet>.vercel.app`
+- `NEXORA_API_KEY` = la même valeur que sur Vercel
+
+Puis redémarre le bot. Sa boucle `plan_sync` (toutes les 5 minutes)
+appelle `getDiscordRoles` et synchronise les rôles d'offres sur NEXORA.
+
+## Limites connues (plan Hobby)
+
+- **Démarrage à froid** : après quelques minutes sans visite, la
+  première requête met quelques secondes à répondre (la fonction se
+  réveille). Ensuite c'est instantané.
+- **Durée max d'une action : 30 secondes** (réglé dans `vercel.json`).
+  Les actions NEXORA (base + SMTP) prennent normalement moins de 2 s.
+- **Pas de serveur persistant** : pas de tâches de fond côté
+  plateforme ; tout passe par les appels `POST /actions`.
+- **Base Supabase gratuite** : le pooler accepte un nombre limité de
+  connexions ; le pool est limité à 5 par fonction chaude.
+- **E-mails** : l'envoi des codes exige `GMAIL_APP_PASSWORD` (mot de
+  passe d'application Gmail, à créer dans les paramètres Google du
+  compte nexora.activate@gmail.com). Sans lui, rien ne part.
+- **Comptes par navigateur** : comme avant, les comptes de la vitrine
+  Netlify (stockage navigateur) ne sont PAS les comptes de cette
+  plateforme (base Postgres partagée).
+
+## Développement en local
+
+```bash
+bun install          # ou npm install
+bun run build        # construit le client dans client/dist
+npm start            # serveur local sur http://localhost:3000
+```
+
+Pour le local, `DATABASE_URL` peut être l'URI directe Supabase (dans
+un fichier `.env`, jamais commité). Le serveur local applique les
+migrations tout seul au démarrage quand la base est joignable.
+
+## Fichiers à ne jamais mettre en ligne
+
+Pas de `node_modules/`, pas de `client/dist/`, pas de `.env`, pas de
+`app.db` dans le dépôt : `.gitignore` les exclut (Vercel reconstruit
+tout au déploiement).

@@ -1,33 +1,33 @@
-// NEXORA — serveur autonome (point d'entrée).
+// NEXORA — serveur local de développement (point d'entrée).
 //
 // Un seul processus sert tout :
 //   - le client construit (client/dist) en fichiers statiques,
 //   - la RPC des actions : POST /actions, corps JSON { action, args },
 //     réponse JSON { data } en cas de succès, { error } sinon — le même
 //     format que le client (client/src/api.ts) consomme.
-//   - GET /healthz pour les vérifications de l'hébergeur.
+//   - GET /healthz pour les vérifications.
 //
-// Démarrage : `bun run start` (ou `npm start`). Le port vient de
+// Démarrage : `npm start` (Bun ou Node 22.18+). Le port vient de
 // process.env.PORT (défaut 3000). La base est le Postgres de
 // DATABASE_URL (Supabase) ; les migrations SQL de ./drizzle sont
 // appliquées au démarrage quand la base est joignable (idempotent).
-// Aucune dépendance à un service externe d'orchestration : ce fichier +
-// le reste de server/src + client/dist suffisent, par exemple sur
-// Render (plan gratuit) avec les variables d'environnement documentées
-// dans .env.example.
+// En production sur Vercel, ce fichier ne sert pas : le client est
+// servi en fichiers statiques et /actions est une fonction serverless
+// (api/actions.ts) qui partage le même handler (server/src/rpc.ts).
+// Variables d'environnement documentées dans .env.example.
 
 import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { extname, join, normalize } from "node:path";
-import { Actions } from "./actions";
-import { createCtx } from "./ctx";
+import { dirname, extname, join, normalize } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runMigrations } from "./db";
-import type { Ctx } from "./framework";
-import type { z } from "zod";
+import { handleRpcPayload } from "./rpc";
 
 const PORT = Number(process.env.PORT ?? "3000") || 3000;
-const ROOT = join(import.meta.dir, "..", "..");
+// Chemin compatible Node.js (remplace l'ancien import.meta.dir, propre
+// à Bun) : la racine du projet est deux niveaux au-dessus de ce fichier.
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CLIENT_DIST = join(ROOT, "client", "dist");
 const MIGRATIONS_DIR = join(ROOT, "drizzle");
 
@@ -69,61 +69,19 @@ async function readBody(req: IncomingMessage): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// RPC POST /actions
+// RPC POST /actions — même handler que la fonction Vercel (server/src/rpc.ts)
 // ---------------------------------------------------------------------------
 
-interface RpcActionDef {
-  request: z.ZodType;
-  response: z.ZodType;
-  handler: (ctx: Ctx, args: never) => Promise<unknown>;
-}
-
-const actions = Actions as unknown as Record<string, RpcActionDef>;
-const ctx = createCtx();
-
 async function handleActions(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  let payload: { action?: unknown; args?: unknown };
+  let payload: unknown;
   try {
-    payload = JSON.parse(await readBody(req)) as typeof payload;
+    payload = JSON.parse(await readBody(req));
   } catch {
     sendJson(res, 400, { error: "Corps de requête JSON invalide." });
     return;
   }
-  const name = typeof payload.action === "string" ? payload.action : "";
-  const def = actions[name];
-  if (!def) {
-    sendJson(res, 404, { error: `Action inconnue : ${name || "(vide)"}` });
-    return;
-  }
-  const parsedArgs = def.request.safeParse(payload.args ?? {});
-  if (!parsedArgs.success) {
-    sendJson(res, 400, {
-      error: "Paramètres invalides.",
-      issues: parsedArgs.error.issues.map((i) => ({
-        path: i.path,
-        message: i.message,
-      })),
-    });
-    return;
-  }
-  try {
-    const result = await def.handler(ctx, parsedArgs.data as never);
-    const parsedResult = def.response.safeParse(result);
-    if (!parsedResult.success) {
-      console.error(
-        `Réponse invalide de l'action ${name} :`,
-        parsedResult.error.issues,
-      );
-      sendJson(res, 500, { error: "Réponse du serveur invalide." });
-      return;
-    }
-    sendJson(res, 200, { data: parsedResult.data });
-  } catch (err) {
-    console.error(`Erreur dans l'action ${name} :`, err);
-    sendJson(res, 500, {
-      error: err instanceof Error ? err.message : "Erreur interne du serveur.",
-    });
-  }
+  const result = await handleRpcPayload(payload);
+  sendJson(res, result.status, result.body);
 }
 
 // ---------------------------------------------------------------------------
