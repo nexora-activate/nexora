@@ -1,0 +1,31 @@
+name: Extract nexora-vercel.zip
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  unzip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Replace repository contents with ZIP contents
+        run: |
+          set -e
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' ! -name '.github' ! -name 'nexora-vercel.zip' -exec rm -rf {} +
+          mkdir -p /tmp/extracted
+          unzip -o nexora-vercel.zip -d /tmp/extracted
+          if [ "$(ls -1 /tmp/extracted | wc -l)" = "1" ] && [ -d "/tmp/extracted/$(ls -1 /tmp/extracted)" ]; then
+            SRC="/tmp/extracted/$(ls -1 /tmp/extracted)"
+          else
+            SRC="/tmp/extracted"
+          fi
+          cp -a "$SRC"/. .
+          ls -la
+      - name: Commit extracted files
+        run: |
+          git config user.name "nexora-activate"
+          git config user.email "nexora-activate@users.noreply.github.com"
+          git add -A
+          git status --short
+          git commit -m "Replace Render code with Vercel code from nexora-vercel.zip" || echo "No changes to commit"
+          git push
