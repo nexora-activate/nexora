@@ -193,6 +193,45 @@ async function hasActivePaidBot(db: Db, userId: number): Promise<boolean> {
 // demandes de serveur y arrivent en vrai, par e-mail.
 const NEXORA_INBOX = "nexora.activate@gmail.com";
 
+// Adresse du formulaire de contact de la VITRINE NEXORA
+// (nexora-activate94190.netlify.app) : ce formulaire Netlify envoie
+// déjà un e-mail à l'adresse NEXORA à chaque envoi (notification
+// vérifiée en vrai le 2026-11-18 avec le message d'Isaac). Il sert de
+// repli quand l'envoi SMTP de la plateforme échoue (par exemple sans
+// GMAIL_APP_PASSWORD) : la plateforme envoie alors le message au
+// formulaire, et Netlify l'envoie par e-mail à sniko.
+const VITRINE_SUPPORT_FORM_URL = "https://nexora-activate94190.netlify.app/";
+
+// Envoie une notification support / demande de serveur via le
+// formulaire Netlify de la vitrine. Renvoie vrai si Netlify a accepté
+// l'envoi (page de remerciement). Ne lève jamais.
+async function postSupportToVitrineForm(args: {
+  name: string;
+  email: string;
+  subject: string;
+  message: string;
+}): Promise<boolean> {
+  try {
+    const body = new URLSearchParams({
+      "form-name": "support",
+      name: args.name,
+      email: args.email,
+      subject: args.subject,
+      message: args.message,
+      "bot-field": "",
+    });
+    const res = await fetch(VITRINE_SUPPORT_FORM_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+      signal: AbortSignal.timeout(5000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 // Enregistre une notification et l'envoie réellement par e-mail (SMTP)
 // à l'adresse NEXORA, puis marque la ligne envoye ou echec selon le
 // résultat SMTP. Ne fait jamais échouer l'action appelante : en cas de
@@ -204,6 +243,8 @@ async function notifyNexora(
   args: {
     kind: "support" | "serveur";
     userId: number;
+    userName: string;
+    userEmail: string;
     subject: string;
     body: string;
   },
@@ -226,13 +267,28 @@ async function notifyNexora(
     subject: args.subject,
     text: args.body,
   });
+  let delivered = sent.ok;
+  let error = sent.ok ? "" : sent.error;
+  if (!delivered) {
+    // Repli : le formulaire Netlify de la vitrine envoie l'e-mail à
+    // sniko (notification déjà vérifiée en vrai). Sans ce repli, sans
+    // GMAIL_APP_PASSWORD, aucun e-mail ne partait.
+    const viaForm = await postSupportToVitrineForm({
+      name: args.userName,
+      email: args.userEmail,
+      subject: args.kind === "serveur" ? "server" : "other",
+      message: args.body,
+    });
+    delivered = viaForm;
+    if (viaForm) error = "";
+  }
   const now = new Date();
   await db
     .update(schema.notificationEmails)
     .set({
-      status: sent.ok ? "envoye" : "echec",
-      error: sent.ok ? "" : sent.error,
-      sentAt: sent.ok ? now : null,
+      status: delivered ? "envoye" : "echec",
+      error,
+      sentAt: delivered ? now : null,
       updatedAt: now,
     })
     .where(eq(schema.notificationEmails.id, row.id));
@@ -1157,6 +1213,8 @@ export const Actions = {
       await notifyNexora(ctx, db, {
         kind: "serveur",
         userId: user.id,
+        userName: user.username,
+        userEmail: user.email,
         subject: `NEXORA — Nouvelle demande de serveur : ${serverName}`,
         body: [
           "Nouvelle demande de création de serveur Discord sur NEXORA.",
@@ -1564,6 +1622,8 @@ export const Actions = {
       await notifyNexora(ctx, db, {
         kind: "support",
         userId: user.id,
+        userName: user.username,
+        userEmail: user.email,
         subject: `NEXORA — Message de support de ${user.username}`,
         body: [
           "Nouveau message de support reçu sur NEXORA.",
