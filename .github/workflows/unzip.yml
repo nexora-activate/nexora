@@ -1,0 +1,34 @@
+name: Unzip nexora-netlify
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  unzip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Replace repository contents with nexora-netlify.zip
+        run: |
+          set -euxo pipefail
+          test -f nexora-netlify.zip
+          rm -rf /tmp/nexora-extract
+          mkdir -p /tmp/nexora-extract
+          unzip -o nexora-netlify.zip -d /tmp/nexora-extract
+          SRC=/tmp/nexora-extract
+          COUNT=$(find "$SRC" -mindepth 1 -maxdepth 1 | wc -l)
+          ONLY=$(find "$SRC" -mindepth 1 -maxdepth 1 || true)
+          if [ "$COUNT" -eq 1 ] && [ -d "$ONLY" ]; then
+            SRC="$ONLY"
+          fi
+          echo "Source directory: $SRC"
+          ls -la "$SRC"
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' ! -name '.github' ! -name 'nexora-netlify.zip' -exec rm -rf {} +
+          cp -a "$SRC"/. .
+          ls -la
+          git config user.name "nexora-activate"
+          git config user.email "nexora-activate@users.noreply.github.com"
+          git add -A
+          git status --short
+          git commit -m "Replace Vercel code with Netlify code from nexora-netlify.zip" || echo "Nothing to commit"
+          git push origin main
