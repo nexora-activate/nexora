@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="color-scheme" content="dark" />
+    <!-- Empty inline icon: stops the browser fetching /favicon.ico, which
+         lives outside the space's routes and fails auth. -->
+    <link rel="icon" href="data:," />
+    <title>NEXORA</title>
+    <script src="./src/main.tsx" type="module"></script>
+  </head>
+  <body style="background: #000000; margin: 0">
+    <div
+      data-generated-space-root=""
+      data-generated-space-slug="snikolabs"
+    ></div>
+    <!--
+      Écran de démarrage statique, écrit directement dans le HTML : il
+      s'affiche AVANT le moindre JavaScript, donc même si le programme du
+      site ne démarre pas sur le téléphone (connexion coupée, ancienne
+      version gardée en mémoire par le navigateur, navigateur intégré
+      capricieux), l'utilisateur voit le nom du site et un message en
+      blanc sur noir — jamais un écran noir vide sans explication.
+      Dès que l'application React démarre, main.tsx retire cet écran.
+      Si au bout de 12 secondes il est toujours là, le petit script
+      ci-dessous ajoute un message clair et un bouton « Recharger ».
+    -->
+    <div
+      id="nexora-boot"
+      style="position: fixed; inset: 0; z-index: 9999; background: #000000; color: #ffffff; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif"
+    >
+      <p style="margin: 0; font-size: 34px; font-weight: 900; letter-spacing: 1px">NEXORA</p>
+      <p style="margin: 0; font-size: 16px; color: #a7a7ae">Chargement… / Loading…</p>
+      <p id="nexora-boot-help" style="display: none; margin: 10px 0 0; max-width: 340px; font-size: 15px; line-height: 1.5; color: #ffffff">
+        Le site met du temps à démarrer sur ton téléphone.
+        <br />
+        The site is taking too long to start on your phone.
+      </p>
+      <button
+        id="nexora-boot-reload"
+        type="button"
+        style="display: none; margin-top: 8px; min-height: 48px; padding: 12px 26px; border: 0; border-radius: 12px; background: #ffffff; color: #000000; font-size: 16px; font-weight: 700; cursor: pointer"
+      >
+        Recharger / Reload
+      </button>
+    </div>
+    <noscript>
+      <div style="position: fixed; inset: 0; z-index: 10000; background: #000000; color: #ffffff; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; font-family: system-ui, sans-serif; font-size: 16px; line-height: 1.5">
+        NEXORA a besoin de JavaScript pour fonctionner. Active JavaScript
+        dans ton navigateur, puis recharge la page.
+      </div>
+    </noscript>
+    <script>
+      // Filet de démarrage : si l'application n'a pas pris la main après
+      // 12 s, on le dit clairement et on propose de recharger. Si React a
+      // démarré, main.tsx a déjà retiré #nexora-boot et ce script ne fait
+      // rien.
+      (function () {
+        var reloadBtn = document.getElementById("nexora-boot-reload");
+        if (reloadBtn) {
+          reloadBtn.addEventListener("click", function () {
+            window.location.reload();
+          });
+        }
+        window.setTimeout(function () {
+          var boot = document.getElementById("nexora-boot");
+          if (!boot) return;
+          var help = document.getElementById("nexora-boot-help");
+          if (help) help.style.display = "block";
+          if (reloadBtn) reloadBtn.style.display = "block";
+        }, 12000);
+      })();
+    </script>
+  </body>
+</html>

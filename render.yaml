@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: nexora
+    runtime: node
+    plan: free
+    buildCommand: bun install && bun run build
+    startCommand: bun run start
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: DISCORD_REDIRECT_URI
+        sync: false
+      - key: NEXORA_API_KEY
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false

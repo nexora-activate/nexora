@@ -1,0 +1,169 @@
+@import "tailwindcss";
+@import "tailwindcss-safe-area";
+
+@theme {
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 14px;
+  --text-sm--line-height: 20px;
+  --text-base: 16px;
+  --text-base--line-height: 24px;
+  --text-lg: 18px;
+  --text-lg--line-height: 28px;
+  --text-xl: 20px;
+  --text-xl--line-height: 28px;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 32px;
+  --text-3xl: 30px;
+  --text-3xl--line-height: 36px;
+  --text-4xl: 36px;
+  --text-4xl--line-height: 40px;
+}
+
+:root {
+  color-scheme: dark;
+  /* Thème professionnel noir & blanc : fond noir pur, textes blancs,
+     surfaces noir profond, aucun bleu. */
+  --bg: #000000;
+  --surface: #101013;
+  --surface-alt: #17171b;
+  --text: #ffffff;
+  --dim: #a7a7ae;
+  --border: #26262c;
+  --accent: #ffffff;
+  --accent-dark: #d4d4d8;
+  --green: #23a55a;
+  --gold: #f0b232;
+  --red: #f23f43;
+  --radius: 10px;
+  --space-surface: var(--surface);
+  --space-surface-alt: var(--surface-alt);
+  --space-muted: var(--dim);
+  --space-border: var(--border);
+  --space-accent: var(--accent);
+}
+
+/* NEXORA est une app noire en mode clair comme en mode sombre. */
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: dark;
+  }
+}
+
+/* Le fond de la page elle-même est noir : jamais de blanc autour de l'app. */
+@layer base {
+  html,
+  body {
+    background: #000000;
+  }
+
+  button,
+  [role="button"],
+  select,
+  summary,
+  input:not([type="checkbox"], [type="radio"]) {
+    min-height: 2.75rem;
+  }
+}
+
+/* Animations d'ouverture : menu des langues (fondu + léger glissement) et
+   panneau latéral gauche (glissement fluide depuis la gauche). */
+@keyframes nexora-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes nexora-drawer-in {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes nexora-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-menu-in {
+  animation: nexora-menu-in 0.16s ease-out;
+  transform-origin: top center;
+}
+
+.animate-drawer-in {
+  animation: nexora-drawer-in 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.animate-fade-in {
+  animation: nexora-fade-in 0.2s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-menu-in,
+  .animate-drawer-in,
+  .animate-fade-in {
+    animation: none;
+  }
+}
+
+/* Conteneur racine de l'application (anciennement fourni par la feuille
+   de base de l'hébergeur) : hauteur pleine, défilement interne, marges
+   de sécurité mobile (encoches, barre de gestes). */
+:root {
+  --twsa-safe-area-inset-top: env(safe-area-inset-top, 0px);
+  --twsa-safe-area-inset-right: env(safe-area-inset-right, 0px);
+  --twsa-safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+  --twsa-safe-area-inset-left: env(safe-area-inset-left, 0px);
+}
+
+html,
+[data-generated-space-root] {
+  height: 100%;
+  min-height: 100%;
+}
+
+html img,
+html video,
+html canvas {
+  height: revert-layer;
+}
+
+[data-generated-space-root] {
+  inset: 0;
+  overflow: auto;
+  position: fixed;
+  scrollbar-width: none;
+}
+
+[data-generated-space-root]::-webkit-scrollbar {
+  display: none;
+}
+
+.nexora-root[data-nexora-root] {
+  --nexora-bottom-padding: calc(
+    var(--bottom-padding, 0px) + env(safe-area-inset-bottom, 0px)
+  );
+  box-sizing: border-box;
+  min-height: calc(
+    100% + var(--header-height, 0px) + var(--nexora-bottom-padding)
+  );
+  min-height: calc(
+    100dvh + var(--header-height, 0px) + var(--nexora-bottom-padding)
+  );
+  padding-top: var(--header-height, 0px);
+  padding-bottom: var(--nexora-bottom-padding);
+  background: var(--bg);
+  color: var(--text);
+}
