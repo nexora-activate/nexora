@@ -64,7 +64,17 @@
 // the key the Patron saved in the admin dashboard; with no key
 // configured it refuses everyone) and returns the Discord-linked users
 // with their current plan mapped to free / premium / premium+ /
-// annuelle, so the bot can assign the matching Discord roles.
+// annuelle, so the bot can assign the matching Discord roles. It also
+// returns each user's site_role ('membre', 'moderateur', 'moderatrice'
+// or 'patron') so the bot can sync the « Modérateur site »,
+// « Modératrice site » and « Owner site » Discord roles.
+//
+// Modération du site (2026-11-20): the Patron can give a user the
+// « Modérateur site » / « Modératrice site » role (adminSetUserRole);
+// moderators get a moderation dashboard (moderatorListUsers) where they
+// can ban accounts (moderatorSetUserBanned). A banned account cannot log
+// in anymore and its sessions are closed. Moderators can never change
+// passwords, plans, permissions or the Patron role.
 
 import { defineAction, z, type ActionsModule, type Ctx } from "./framework";
 import { privileged } from "./privileged";
@@ -130,12 +140,32 @@ async function requireUser(ctx: Ctx, db: Db, token: string): Promise<AuthedUser 
     .from(schema.users)
     .where(eq(schema.users.id, session.userId))
     .limit(1);
-  return userRows[0] ?? null;
+  const user = userRows[0] ?? null;
+  // Compte banni : la session ne vaut plus rien (les sessions sont de
+  // toute façon supprimées au moment du ban — c'est une ceinture de
+  // sécurité si une session a survécu).
+  if (!user || user.banned) return null;
+  return user;
 }
 
 async function requirePatron(ctx: Ctx, db: Db, token: string): Promise<AuthedUser | null> {
   const user = await requireUser(ctx, db, token);
   if (!user || user.role !== "patron") return null;
+  return user;
+}
+
+// Modération du site (2026-11-20) : les modérateurs (moderateur /
+// moderatrice, nommés par le Patron) et le Patron peuvent lister les
+// comptes et les bannir. Ils ne peuvent NI changer les mots de passe,
+// NI changer les offres, NI donner des permissions : ces actions restent
+// réservées au Patron (requirePatron).
+function isModeratorRole(role: string): boolean {
+  return role === "moderateur" || role === "moderatrice" || role === "patron";
+}
+
+async function requireModerator(ctx: Ctx, db: Db, token: string): Promise<AuthedUser | null> {
+  const user = await requireUser(ctx, db, token);
+  if (!user || !isModeratorRole(user.role)) return null;
   return user;
 }
 
@@ -145,6 +175,7 @@ function publicUser(user: AuthedUser) {
     username: user.username,
     email: user.email,
     role: user.role,
+    banned: user.banned,
     createdAt: user.createdAt.toISOString(),
     discordId: user.discordId ?? null,
     discordUsername: user.discordUsername ?? "",
@@ -332,6 +363,7 @@ const userObj = z.object({
   username: z.string(),
   email: z.string(),
   role: z.string(),
+  banned: z.boolean(),
   createdAt: z.string(),
   discordId: z.string().nullable(),
   discordUsername: z.string(),
@@ -1017,6 +1049,17 @@ export const Actions = {
         expectedHash: user.passwordHash,
       });
       if (!check.ok) return { ok: false, error: "E-mail ou mot de passe incorrect." };
+      // Compte banni : vérifié APRÈS le mot de passe pour ne pas révéler
+      // qu'un compte est banni à quelqu'un qui ne connaît pas le mot de
+      // passe. Le ban ne se contourne pas par le mot de passe oublié :
+      // resetPassword ne crée pas de session, il faut se reconnecter ici.
+      if (user.banned) {
+        return {
+          ok: false,
+          error:
+            "Ce compte est banni. Contacte le support si tu penses que c'est une erreur.",
+        };
+      }
       const token = await createSession(ctx, db, user.id);
       return { ok: true, token, user: publicUser(user) };
     },
@@ -1150,6 +1193,14 @@ export const Actions = {
         .limit(1);
       const linkedUser = linked[0];
       if (linkedUser) {
+        // Compte banni : pas de connexion Discord non plus.
+        if (linkedUser.banned) {
+          return {
+            ok: false,
+            error:
+              "Ce compte est banni. Contacte le support si tu penses que c'est une erreur.",
+          };
+        }
         await db
           .update(schema.users)
           .set({ discordUsername: discordName, discordAvatar: identity.avatar })
@@ -1234,6 +1285,14 @@ export const Actions = {
           ok: false,
           error:
             "Connecte-toi d'abord à ton compte NEXORA, puis confirme la connexion Discord.",
+        };
+      }
+      // Compte banni : pas de nouvelle session, même via Discord.
+      if (target.banned) {
+        return {
+          ok: false,
+          error:
+            "Ce compte est banni. Contacte le support si tu penses que c'est une erreur.",
         };
       }
       const others = await db
@@ -1585,7 +1644,7 @@ export const Actions = {
 
   adminListUsers: defineAction({
     description:
-      "Patron only: lists every registered user, newest first, each with their current plan (active bot subscription's plan, or 'gratuit').",
+      "Patron only: lists every registered user, newest first, each with their current plan (active bot subscription's plan, or 'gratuit'), site role and banned status.",
     request: z.object({ token: z.string().min(1) }),
     response: z.object({
       users: z.array(userObj.extend({ currentPlan: z.string() })),
@@ -1923,6 +1982,124 @@ export const Actions = {
     },
   }),
 
+  // Modération du site (2026-11-20) : le Patron donne le rôle
+  // « Modérateur site » ou « Modératrice site » à un compte ; ce compte
+  // voit alors les utilisateurs et peut les bannir, mais ne peut ni
+  // changer les mots de passe, ni changer les offres, ni donner des
+  // permissions, ni toucher au rôle Patron.
+  adminSetUserRole: defineAction({
+    description:
+      "Patron only: gives a user the 'Modérateur site' or 'Modératrice site' role, or takes it back (back to 'membre'). The Patron role itself can never be given here — it stays tied to the Patron e-mail address only (adminSetRole).",
+    request: z.object({
+      token: z.string().min(1),
+      userId: z.number().int().positive(),
+      siteRole: z.enum(["membre", "moderateur", "moderatrice"]),
+    }),
+    response: okResponse,
+    privileged: SHA,
+    async handler(ctx, args): Promise<OkResult> {
+      const db = ctx.db<typeof schema>();
+      const patron = await requirePatron(ctx, db, args.token);
+      if (!patron) return { ok: false, error: "Réservé au Patron." };
+      if (args.userId === patron.id) {
+        return { ok: false, error: "Tu ne peux pas changer ton propre rôle." };
+      }
+      const targets = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.id, args.userId))
+        .limit(1);
+      const target = targets[0];
+      if (!target) return { ok: false, error: "Utilisateur introuvable." };
+      if (target.role === "patron") {
+        return { ok: false, error: "On ne peut pas changer le rôle d'un Patron." };
+      }
+      await db
+        .update(schema.users)
+        .set({ role: args.siteRole })
+        .where(eq(schema.users.id, args.userId));
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  moderatorListUsers: defineAction({
+    description:
+      "Moderators and Patron only: lists every registered user, newest first, each with pseudo, e-mail, current plan, linked Discord account, signup date, site role and banned status. Passwords are never returned.",
+    request: z.object({ token: z.string().min(1) }),
+    response: z.object({
+      users: z.array(userObj.extend({ currentPlan: z.string() })),
+    }),
+    privileged: SHA,
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const moderator = await requireModerator(ctx, db, args.token);
+      if (!moderator) return { users: [] };
+      const rows = await db
+        .select()
+        .from(schema.users)
+        .orderBy(desc(schema.users.id));
+      const users = [];
+      for (const row of rows) {
+        users.push({
+          ...publicUser(row),
+          currentPlan: await currentPlanKey(db, row.id),
+        });
+      }
+      return { users };
+    },
+  }),
+
+  moderatorSetUserBanned: defineAction({
+    description:
+      "Moderators and Patron only: bans or unbans a user account. A banned account cannot log in anymore (e-mail or Discord) and all of its sessions are closed at once. A Patron can never be banned; a moderator cannot ban another moderator — only the Patron can; nobody can ban themselves.",
+    request: z.object({
+      token: z.string().min(1),
+      userId: z.number().int().positive(),
+      banned: z.boolean(),
+    }),
+    response: okResponse,
+    privileged: SHA,
+    async handler(ctx, args): Promise<OkResult> {
+      const db = ctx.db<typeof schema>();
+      const actor = await requireModerator(ctx, db, args.token);
+      if (!actor) return { ok: false, error: "Réservé aux modérateurs." };
+      if (args.userId === actor.id) {
+        return { ok: false, error: "Tu ne peux pas te bannir toi-même." };
+      }
+      const targets = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.id, args.userId))
+        .limit(1);
+      const target = targets[0];
+      if (!target) return { ok: false, error: "Utilisateur introuvable." };
+      if (target.role === "patron") {
+        return { ok: false, error: "On ne peut pas bannir un Patron." };
+      }
+      if (
+        actor.role !== "patron" &&
+        (target.role === "moderateur" || target.role === "moderatrice")
+      ) {
+        return {
+          ok: false,
+          error: "Un modérateur ne peut pas bannir un autre modérateur.",
+        };
+      }
+      await db
+        .update(schema.users)
+        .set({ banned: args.banned })
+        .where(eq(schema.users.id, args.userId));
+      if (args.banned) {
+        // Compte banni : toutes ses sessions sont fermées, il est
+        // déconnecté partout tout de suite.
+        await db.delete(schema.sessions).where(eq(schema.sessions.userId, args.userId));
+      }
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
   adminSetUserPlan: defineAction({
     description:
       "Patron only: manually sets a user's plan (no payment involved — plans are granted by hand). Cancels the user's other active bot subscriptions and pending orders, then activates the chosen plan for its real duration starting now: gratuit 24 h, premium 30 days, premium_plus 150 days, annuel 365 days. This is the plan shown on the user's profile and returned to the Discord bot by getDiscordRoles.",
@@ -2029,13 +2206,13 @@ export const Actions = {
 
   getDiscordRoles: defineAction({
     description:
-      "Bot API (the GET /api/discord/roles equivalent on this action-based platform): the sniko Discord bot calls it with the NEXORA_API_KEY (the X-Nexora-Api-Key header equivalent — environment variable first, otherwise the key saved by the Patron in the admin dashboard; when no key is configured, everyone is refused, like a 401). Returns { users: [{ discord_id, plan }] } for every user who linked their Discord account, with the plan mapped to free / premium / premium+ / annuelle (the user's active bot subscription, free by default), so the bot can sync the Discord roles.",
+      "Bot API (the GET /api/discord/roles equivalent on this action-based platform): the sniko Discord bot calls it with the NEXORA_API_KEY (the X-Nexora-Api-Key header equivalent — environment variable first, otherwise the key saved by the Patron in the admin dashboard; when no key is configured, everyone is refused, like a 401). Returns { users: [{ discord_id, plan, site_role }] } for every user who linked their Discord account, with the plan mapped to free / premium / premium+ / annuelle (the user's active bot subscription, free by default), so the bot can sync the Discord roles. site_role is the account's site role ('membre', 'moderateur', 'moderatrice' or 'patron'): the bot maps 'moderateur' to the Discord role « Modérateur site », 'moderatrice' to « Modératrice site » and 'patron' to « Owner site ».",
     request: z.object({ apiKey: z.string().max(200) }),
     response: z.union([
       z.object({
         ok: z.literal(true),
         users: z.array(
-          z.object({ discord_id: z.string(), plan: z.string() }),
+          z.object({ discord_id: z.string(), plan: z.string(), site_role: z.string() }),
         ),
       }),
       errorResponse,
@@ -2056,7 +2233,11 @@ export const Actions = {
       for (const row of rows) {
         if (!row.discordId) continue;
         const plan = await currentPlanKey(db, row.id);
-        users.push({ discord_id: row.discordId, plan: PLAN_API_NAME[plan] });
+        users.push({
+          discord_id: row.discordId,
+          plan: PLAN_API_NAME[plan],
+          site_role: row.role,
+        });
       }
       return { ok: true as const, users };
     },
