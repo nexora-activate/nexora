@@ -154,6 +154,14 @@ function discordAvatarUrl(discordId: string, avatar: string): string {
   return `https://cdn.discordapp.com/embed/avatars/${index}.png`;
 }
 
+/* Photo de profil affichée pour un utilisateur : l'adresse d'image
+   choisie dans « Mon profil » gagne, sinon son avatar Discord, sinon
+   l'avatar Discord par défaut. */
+function profileAvatarUrl(user: User): string {
+  if (user.avatarUrl) return user.avatarUrl;
+  return discordAvatarUrl(user.discordId ?? "", user.discordAvatar);
+}
+
 // Petit easter egg : le pseudo « sniko » ne donne plus le rôle Patron
 // (le rôle est lié à l'adresse e-mail du Patron, côté serveur) — à la
 // place, le site affiche « voleur » pour ce pseudo.
@@ -357,7 +365,7 @@ function DiscordButton({ token }: { token?: string }) {
 function EntryScreen({ onAuth }: { onAuth: (token: string) => void }) {
   const i18n = useI18n();
   const { t } = i18n;
-  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [mode, setMode] = useState<"login" | "signup" | "forgot">("login");
   return (
     <div className="w-full px-3 pb-10 sm:px-5 lg:mx-auto lg:max-w-5xl">
       {/* Barre du haut : logo à gauche, langue en haut à droite */}
@@ -390,14 +398,24 @@ function EntryScreen({ onAuth }: { onAuth: (token: string) => void }) {
         <div>
           <div className="mt-6 rounded-2xl bg-[var(--surface)] p-5 lg:mt-0">
         {mode === "login" ? (
-          <LoginForm onAuth={onAuth} />
-        ) : (
+          <LoginForm onAuth={onAuth} onForgot={() => setMode("forgot")} />
+        ) : mode === "signup" ? (
           <SignupForm onAuth={onAuth} />
+        ) : (
+          <ForgotPasswordForm onDone={() => setMode("login")} />
         )}
       </div>
 
       <div className="mt-5 flex items-center justify-center gap-2 text-base">
-        {mode === "login" ? (
+        {mode === "forgot" ? (
+          <button
+            type="button"
+            onClick={() => setMode("login")}
+            className="px-2 font-bold text-white underline decoration-white decoration-2 underline-offset-4"
+          >
+            {t("backToLogin")}
+          </button>
+        ) : mode === "login" ? (
           <>
             <span className="text-[var(--dim)]">{t("noAccount")}</span>
             <button
@@ -439,7 +457,13 @@ function EntryScreen({ onAuth }: { onAuth: (token: string) => void }) {
   );
 }
 
-function LoginForm({ onAuth }: { onAuth: (token: string) => void }) {
+function LoginForm({
+  onAuth,
+  onForgot,
+}: {
+  onAuth: (token: string) => void;
+  onForgot: () => void;
+}) {
   const i18n = useI18n();
   const { t, te } = i18n;
   const [email, setEmail] = useState("");
@@ -493,6 +517,13 @@ function LoginForm({ onAuth }: { onAuth: (token: string) => void }) {
       <ErrorBox message={error} />
       <button type="submit" disabled={login.isPending} className={primaryBtn}>
         {login.isPending ? t("loggingIn") : t("loginTitle")}
+      </button>
+      <button
+        type="button"
+        onClick={onForgot}
+        className="w-full py-1 text-sm font-bold text-[var(--dim)] underline underline-offset-4"
+      >
+        {t("forgotLink")}
       </button>
       <div className="flex items-center gap-3" aria-hidden="true">
         <span className="h-px flex-1 bg-[var(--border)]" />
@@ -760,6 +791,265 @@ function SignupForm({ onAuth }: { onAuth: (token: string) => void }) {
         className="w-full py-1 text-sm font-bold text-[var(--dim)] underline underline-offset-4"
       >
         {t("changeEmail")}
+      </button>
+    </form>
+  );
+}
+
+/* Mot de passe oublié, SANS e-mail (comme l'inscription fix3) : étape 1
+   l'e-mail, étape 2 le code affiché à l'écran, étape 3 « Ton nouveau
+   mot de passe » (nouveau mot de passe + confirmation). Le code est
+   vérifié par le serveur au moment du changement : sans le code, on ne
+   peut pas changer le mot de passe de quelqu'un d'autre avec juste son
+   e-mail. */
+function ForgotPasswordForm({ onDone }: { onDone: () => void }) {
+  const i18n = useI18n();
+  const { t, te } = i18n;
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [email, setEmail] = useState("");
+  const [typedCode, setTypedCode] = useState("");
+  const [shownCode, setShownCode] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+  const [resendLeft, setResendLeft] = useState(0);
+
+  useEffect(() => {
+    if (resendLeft <= 0) return;
+    const timer = setTimeout(() => setResendLeft((v) => v - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [resendLeft]);
+  useEffect(() => {
+    setResendLeft(readCodeCooldown(email));
+  }, [email]);
+
+  const requestCode = useMutation({
+    mutationFn: async () => await api.requestResetCode({ email: email.trim() }),
+    onSuccess: (res) => {
+      if (res.ok) {
+        setShownCode(res.code);
+        writeCodeCooldown(email);
+        setStep(2);
+        setResendLeft(30);
+      } else {
+        setResendLeft(readCodeCooldown(email));
+        setError(te(res.error));
+      }
+    },
+    onError: () => setError(t("genericError")),
+  });
+
+  const reset = useMutation({
+    mutationFn: async () =>
+      await api.resetPassword({
+        email: email.trim(),
+        code: typedCode.trim(),
+        newPassword: password,
+      }),
+    onSuccess: (res) => {
+      if (res.ok) setDone(true);
+      else setError(te(res.error));
+    },
+    onError: () => setError(t("genericError")),
+  });
+
+  function submitEmail(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    requestCode.mutate();
+  }
+
+  function submitCode(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    if (typedCode.length !== 6) {
+      setError(te("Ce code n'est pas le bon. Vérifie et réessaie."));
+      return;
+    }
+    setStep(3);
+  }
+
+  function submitPassword(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    if (password.length < 8 || password.length > 12) {
+      setError(te("Le mot de passe doit faire entre 8 et 12 caractères."));
+      return;
+    }
+    const digitCount = (password.match(/[0-9]/g) ?? []).length;
+    if (digitCount < 1 || digitCount > 5) {
+      setError(te("Le mot de passe doit contenir entre 1 et 5 chiffres."));
+      return;
+    }
+    if (password !== confirm) {
+      setError(t("forgotMismatch"));
+      return;
+    }
+    reset.mutate();
+  }
+
+  if (done) {
+    return (
+      <div className="space-y-4">
+        <h2 className="text-xl font-extrabold">{t("forgotTitle")}</h2>
+        <p className="text-sm text-[var(--dim)]">{t("forgotSuccess")}</p>
+        <button type="button" onClick={onDone} className={primaryBtn}>
+          {t("backToLogin")}
+        </button>
+      </div>
+    );
+  }
+
+  if (step === 1) {
+    return (
+      <form onSubmit={submitEmail} className="space-y-4">
+        <h2 className="text-xl font-extrabold">{t("forgotTitle")}</h2>
+        <p className="text-sm font-bold text-[var(--dim)]">{t("forgotStep1")}</p>
+        <div>
+          <label htmlFor="forgot-email" className={labelCls}>
+            {t("emailLabel")}
+          </label>
+          <input
+            {...FIELDS.requestResetCode.email}
+            id="forgot-email"
+            type="email"
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder={t("emailPlaceholder")}
+            className={inputCls}
+          />
+        </div>
+        <p className="text-sm text-[var(--dim)]">{t("codeIntro")}</p>
+        <ErrorBox message={error} />
+        <button
+          type="submit"
+          disabled={requestCode.isPending || resendLeft > 0}
+          className={primaryBtn}
+        >
+          {requestCode.isPending ? t("sending") : t("receiveCode")}
+        </button>
+        {resendLeft > 0 && (
+          <p className="text-center text-sm font-bold text-[var(--dim)]">
+            {t("codeCooldownNote", { s: resendLeft })}
+          </p>
+        )}
+      </form>
+    );
+  }
+
+  if (step === 2) {
+    return (
+      <form onSubmit={submitCode} className="space-y-4">
+        <h2 className="text-xl font-extrabold">{t("forgotTitle")}</h2>
+        <p className="text-sm font-bold text-[var(--dim)]">{t("forgotStep2")}</p>
+        {shownCode && (
+          <div className="rounded-xl bg-white/10 px-4 py-3 text-sm">
+            <p className="font-bold">{t("codeShownTitle")}</p>
+            <p className="mt-2 text-center text-3xl font-black tracking-[0.3em]">
+              {shownCode}
+            </p>
+            <p className="mt-2 text-[var(--dim)]">{t("codeShownBody")}</p>
+          </div>
+        )}
+        <div>
+          <label htmlFor="forgot-code" className={labelCls}>
+            {t("codeLabel")}
+          </label>
+          <input
+            {...FIELDS.resetPassword.code}
+            id="forgot-code"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            pattern="[0-9]{6}"
+            value={typedCode}
+            onChange={(e) =>
+              setTypedCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+            }
+            placeholder="123456"
+            className={`${inputCls} text-center text-xl font-bold tracking-[0.3em]`}
+          />
+        </div>
+        <ErrorBox message={error} />
+        <button
+          type="submit"
+          disabled={typedCode.length !== 6}
+          className={primaryBtn}
+        >
+          {t("forgotContinue")}
+        </button>
+        <button
+          type="button"
+          onClick={() => requestCode.mutate()}
+          disabled={requestCode.isPending || resendLeft > 0}
+          className="w-full py-1 text-sm font-bold text-[var(--dim)] underline underline-offset-4 disabled:opacity-50"
+        >
+          {t("resendCode")}
+        </button>
+        {resendLeft > 0 && (
+          <p className="text-center text-sm font-bold text-[var(--dim)]">
+            {t("codeCooldownNote", { s: resendLeft })}
+          </p>
+        )}
+        <button
+          type="button"
+          onClick={() => setStep(1)}
+          className="w-full py-1 text-sm font-bold text-[var(--dim)] underline underline-offset-4"
+        >
+          {t("changeEmail")}
+        </button>
+      </form>
+    );
+  }
+
+  return (
+    <form onSubmit={submitPassword} className="space-y-4">
+      <h2 className="text-xl font-extrabold">{t("forgotNewPasswordTitle")}</h2>
+      <p className="text-sm font-bold text-[var(--dim)]">{t("forgotStep3")}</p>
+      <div>
+        <label htmlFor="forgot-password" className={labelCls}>
+          {t("passwordNewLabel")}
+        </label>
+        <input
+          {...FIELDS.resetPassword.newPassword}
+          id="forgot-password"
+          type="password"
+          autoComplete="new-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="••••••••"
+          className={inputCls}
+          aria-describedby="forgot-password-rule"
+        />
+        <p id="forgot-password-rule" className="mt-1 text-xs text-[var(--dim)]">
+          {t("passwordRule")}
+        </p>
+      </div>
+      <div>
+        <label htmlFor="forgot-confirm" className={labelCls}>
+          {t("forgotConfirmLabel")}
+        </label>
+        <input
+          id="forgot-confirm"
+          type="password"
+          autoComplete="new-password"
+          value={confirm}
+          onChange={(e) => setConfirm(e.target.value)}
+          placeholder="••••••••"
+          className={inputCls}
+        />
+      </div>
+      <ErrorBox message={error} />
+      <button type="submit" disabled={reset.isPending} className={primaryBtn}>
+        {reset.isPending ? t("forgotChanging") : t("forgotSubmit")}
+      </button>
+      <button
+        type="button"
+        onClick={() => setStep(2)}
+        className="w-full py-1 text-sm font-bold text-[var(--dim)] underline underline-offset-4"
+      >
+        {t("back")}
       </button>
     </form>
   );
@@ -1300,6 +1590,170 @@ function CurrentPlanChip({ plan, current }: { plan: string; current: string }) {
   );
 }
 
+/* « Mon profil » : s'ouvre en cliquant sur le pseudo en haut. Biographie
+   libre, photo de profil par adresse d'image (https://), pseudo
+   changeable une fois par semaine maximum (le serveur refuse si le
+   dernier changement date de moins de 7 jours, et le panneau indique
+   la date du prochain changement possible). La photo choisie remplace
+   l'avatar Discord partout où l'utilisateur est affiché. Pas de
+   téléversement de fichier : une adresse d'image suffit, aucun nouveau
+   service n'est nécessaire. */
+function ProfileModal({
+  user,
+  token,
+  onClose,
+}: {
+  user: User;
+  token: string;
+  onClose: () => void;
+}) {
+  const i18n = useI18n();
+  const { t, te, fmtDate } = i18n;
+  const queryClient = useQueryClient();
+  const [username, setUsername] = useState(user.username);
+  const [bio, setBio] = useState(user.bio ?? "");
+  const [avatarUrl, setAvatarUrl] = useState(user.avatarUrl ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  const nextChangeAt = user.usernameChangedAt
+    ? new Date(new Date(user.usernameChangedAt).getTime() + 7 * 24 * 60 * 60 * 1000)
+    : null;
+  const inCooldown = !!nextChangeAt && nextChangeAt.getTime() > Date.now();
+
+  const save = useMutation({
+    mutationFn: async () =>
+      await api.updateProfile({
+        token,
+        username: username.trim(),
+        bio: bio.trim(),
+        avatarUrl: avatarUrl.trim(),
+      }),
+    onSuccess: (res) => {
+      if (res.ok) {
+        setSaved(true);
+        setError(null);
+        void queryClient.invalidateQueries({ queryKey: ["session"] });
+        void queryClient.invalidateQueries({ queryKey: ["admin"] });
+      } else setError(te(res.error));
+    },
+    onError: () => setError(t("genericError")),
+  });
+
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    setSaved(false);
+    setError(null);
+    if (username.trim().length < 2 || username.trim().length > 30) {
+      setError(te("Ton pseudo doit faire entre 2 et 30 caractères."));
+      return;
+    }
+    if (avatarUrl.trim() && !avatarUrl.trim().startsWith("https://")) {
+      setError(te("L'adresse de l'image doit commencer par https://"));
+      return;
+    }
+    save.mutate();
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/80 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("profileTitle")}
+      onClick={onClose}
+    >
+      <div
+        className="mt-10 w-full max-w-xl rounded-2xl bg-[var(--surface)] p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-xl font-extrabold">{t("profileTitle")}</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={t("close")}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface)] text-lg font-black text-[var(--text)]"
+          >
+            ✕
+          </button>
+        </div>
+        <div className="mt-3 flex items-center gap-3">
+          <img src={profileAvatarUrl(user)} alt="" className="h-14 w-14 rounded-full" />
+          <div>
+            <p className="font-bold">{displayName(user, i18n)}</p>
+            {user.bio ? (
+              <p className="text-sm text-[var(--dim)]">{user.bio}</p>
+            ) : (
+              <p className="text-sm text-[var(--dim)]">{user.email}</p>
+            )}
+          </div>
+        </div>
+        <form onSubmit={submit} className="mt-4 space-y-4">
+          <div>
+            <label htmlFor="profile-username" className={labelCls}>
+              {t("profileUsernameLabel")}
+            </label>
+            <input
+              {...FIELDS.updateProfile.username}
+              id="profile-username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className={inputCls}
+            />
+            {isThiefName(username) && (
+              <p className="mt-1 text-sm font-bold text-[#f0b232]">{t("thiefNote")}</p>
+            )}
+            <p className="mt-1 text-xs text-[var(--dim)]">
+              {inCooldown && nextChangeAt
+                ? t("usernameCooldownUntil", { date: fmtDate(nextChangeAt.toISOString()) })
+                : t("usernameChangeRule")}
+            </p>
+          </div>
+          <div>
+            <label htmlFor="profile-bio" className={labelCls}>
+              {t("profileBioLabel")}
+            </label>
+            <textarea
+              {...FIELDS.updateProfile.bio}
+              id="profile-bio"
+              value={bio}
+              onChange={(e) => setBio(e.target.value)}
+              placeholder={t("profileBioPlaceholder")}
+              rows={3}
+              className={inputCls}
+            />
+          </div>
+          <div>
+            <label htmlFor="profile-avatar" className={labelCls}>
+              {t("profileAvatarLabel")}
+            </label>
+            <input
+              {...FIELDS.updateProfile.avatarUrl}
+              id="profile-avatar"
+              type="url"
+              value={avatarUrl}
+              onChange={(e) => setAvatarUrl(e.target.value)}
+              placeholder="https://…"
+              className={inputCls}
+            />
+            <p className="mt-1 text-xs text-[var(--dim)]">{t("profileAvatarHint")}</p>
+          </div>
+          <ErrorBox message={error} />
+          {saved && (
+            <p className="rounded-xl bg-[#23a55a]/15 px-4 py-3 text-sm font-medium text-[#3fd68c]">
+              {t("profileSaved")}
+            </p>
+          )}
+          <button type="submit" disabled={save.isPending} className={primaryBtn}>
+            {save.isPending ? t("profileSaving") : t("profileSave")}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function Dashboard({ token, user }: { token: string; user: User }) {
   const i18n = useI18n();
   const { t, te, fmtDate } = i18n;
@@ -1307,6 +1761,7 @@ function Dashboard({ token, user }: { token: string; user: User }) {
   const [tab, setTab] = useState<"accueil" | "serveurs" | "bot" | "admin">("accueil");
   const [view, setView] = useState<"main" | "support">("main");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [showAd, setShowAd] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -1425,7 +1880,14 @@ function Dashboard({ token, user }: { token: string; user: User }) {
           <div>
             <p className="text-lg font-black leading-tight">NEXORA</p>
             <p className="text-sm text-[var(--dim)]">
-              {t("hello")}, <span className="font-bold text-white">{displayName(user, i18n)}</span>
+              {t("hello")},{" "}
+              <button
+                type="button"
+                onClick={() => setShowProfile(true)}
+                className="font-bold text-white underline underline-offset-4"
+              >
+                {displayName(user, i18n)}
+              </button>
               {isPatron && (
                 <span className="ml-2 rounded-full bg-[#f0b232] px-2 py-0.5 text-xs font-black text-black">
                   {t("patronBadge")}
@@ -1440,7 +1902,7 @@ function Dashboard({ token, user }: { token: string; user: User }) {
             {user.discordId && (
               <p className="mt-1 flex items-center gap-1.5 text-sm text-[var(--dim)]">
                 <img
-                  src={discordAvatarUrl(user.discordId, user.discordAvatar)}
+                  src={profileAvatarUrl(user)}
                   alt=""
                   className="h-5 w-5 rounded-full"
                 />
@@ -1451,6 +1913,14 @@ function Dashboard({ token, user }: { token: string; user: User }) {
         </div>
         <LanguagePicker />
       </div>
+
+      {showProfile && (
+        <ProfileModal
+          user={user}
+          token={token}
+          onClose={() => setShowProfile(false)}
+        />
+      )}
 
       {/* Menu latéral gauche : uniquement les 3 rubriques demandées */}
       <SideMenu
@@ -1605,7 +2075,7 @@ function Dashboard({ token, user }: { token: string; user: User }) {
                 {user.discordId ? (
                   <p className="mt-3 flex items-center gap-2.5">
                     <img
-                      src={discordAvatarUrl(user.discordId, user.discordAvatar)}
+                      src={profileAvatarUrl(user)}
                       alt=""
                       className="h-10 w-10 rounded-full"
                     />
@@ -1682,7 +2152,11 @@ function Dashboard({ token, user }: { token: string; user: User }) {
                     <p className="text-lg font-extrabold">
                       {t("premiumOffer")} <span className="text-[#f0b232]">★</span>
                     </p>
-                    <p className="mt-1 text-2xl font-black text-[#3fd68c]">
+                    <p className="mt-1 text-3xl font-black">
+                      3,99 €{" "}
+                      <span className="text-base font-bold text-[var(--dim)]">{t("perMonth")}</span>
+                    </p>
+                    <p className="mt-1 text-sm font-bold text-[#3fd68c]">
                       {t("serverIncludedBadge")}
                     </p>
                     <ul className="mt-3 space-y-1 text-sm text-[var(--dim)]">
@@ -1713,6 +2187,72 @@ function Dashboard({ token, user }: { token: string; user: User }) {
                     </button>
                   </div>
                 )}
+              </div>
+
+              {/* Prix des 4 offres du bot */}
+              <div className="rounded-2xl bg-[var(--surface)] p-5">
+                <h3 className="text-lg font-extrabold">{t("serverPricesTitle")}</h3>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {[
+                    {
+                      name: t("planFree"),
+                      price: "0 €",
+                      period: null as string | null,
+                      cmds: t("planCmds8"),
+                      note: null as string | null,
+                      highlight: false,
+                    },
+                    {
+                      name: "Premium",
+                      price: "3,99 €",
+                      period: t("perMonth") as string | null,
+                      cmds: t("planCmds20"),
+                      note: null as string | null,
+                      highlight: true,
+                    },
+                    {
+                      name: "Premium+",
+                      price: "10 €",
+                      period: t("per5Months") as string | null,
+                      cmds: t("planCmds30"),
+                      note: null as string | null,
+                      highlight: true,
+                    },
+                    {
+                      name: t("planAnnual"),
+                      price: "30 €",
+                      period: t("perYear") as string | null,
+                      cmds: t("planCmds30"),
+                      note: t("annualServerNote") as string | null,
+                      highlight: true,
+                    },
+                  ].map((c) => (
+                    <div
+                      key={c.name}
+                      className={`rounded-2xl bg-[#0a0a0c] p-4 ${
+                        c.highlight ? "ring-1 ring-[#f0b232]" : ""
+                      }`}
+                    >
+                      <p className="font-extrabold">
+                        {c.name}
+                        {c.highlight && <span className="text-[#f0b232]"> ★</span>}
+                      </p>
+                      <p className="mt-1 text-2xl font-black">
+                        {c.price}
+                        {c.period && (
+                          <span className="text-sm font-bold text-[var(--dim)]">
+                            {" "}
+                            {c.period}
+                          </span>
+                        )}
+                      </p>
+                      <p className="mt-1 text-sm text-[var(--dim)]">{c.cmds}</p>
+                      {c.note && (
+                        <p className="mt-1 text-sm font-bold text-[#f0b232]">{c.note}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
 
               <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
@@ -2026,6 +2566,80 @@ function AdminUserPlanForm({
   );
 }
 
+// Petit champ dans la carte de chaque utilisateur : le Patron DÉFINIT un
+// nouveau mot de passe pour cet utilisateur, sans jamais voir l'ancien
+// (les mots de passe sont hachés, ils ne peuvent ni être affichés ni
+// être envoyés). Mêmes règles que l'inscription : 8 à 12 caractères,
+// 1 à 5 chiffres.
+function AdminUserPasswordForm({
+  userId,
+  disabled,
+  onApply,
+}: {
+  userId: number;
+  disabled: boolean;
+  onApply: (newPassword: string) => void;
+}) {
+  const i18n = useI18n();
+  const { t, te } = i18n;
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [changed, setChanged] = useState(false);
+
+  function submit() {
+    setError(null);
+    setChanged(false);
+    if (password.length < 8 || password.length > 12) {
+      setError(te("Le mot de passe doit faire entre 8 et 12 caractères."));
+      return;
+    }
+    const digitCount = (password.match(/[0-9]/g) ?? []).length;
+    if (digitCount < 1 || digitCount > 5) {
+      setError(te("Le mot de passe doit contenir entre 1 et 5 chiffres."));
+      return;
+    }
+    onApply(password);
+    setPassword("");
+    setChanged(true);
+  }
+
+  return (
+    <div className="mt-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <label htmlFor={`admin-password-${userId}`} className="text-sm font-bold text-[var(--dim)]">
+          {t("adminNewPasswordLabel")}
+        </label>
+        <input
+          {...FIELDS.adminResetUserPassword.newPassword}
+          id={`admin-password-${userId}`}
+          type="password"
+          autoComplete="new-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="••••••••"
+          className="w-36 rounded-lg border border-[var(--border)] bg-[#0a0a0c] px-3 py-2 text-sm font-bold text-white placeholder:text-[var(--dim)]"
+          aria-describedby={`admin-password-rule-${userId}`}
+        />
+        <button
+          type="button"
+          disabled={disabled || password.length === 0}
+          onClick={submit}
+          className="rounded-lg bg-white px-3 py-2 text-xs font-bold text-black disabled:opacity-50"
+        >
+          {t("adminChangePassword")}
+        </button>
+      </div>
+      <p id={`admin-password-rule-${userId}`} className="mt-1 text-xs text-[var(--dim)]">
+        {t("passwordRule")}
+      </p>
+      {error && <p className="mt-1 text-sm font-bold text-[#ff6b6b]">{error}</p>}
+      {changed && !error && (
+        <p className="mt-1 text-sm font-bold text-[#3fd68c]">{t("adminPasswordChanged")}</p>
+      )}
+    </div>
+  );
+}
+
 // Section Patron « Connexion Discord (OAuth) » + « API du bot » :
 // enregistre le Client Secret Discord, l'adresse de retour et la clé
 // API du bot (action adminSaveDiscordConfig). Les variables
@@ -2294,6 +2908,16 @@ function AdminPanel({ token }: { token: string }) {
         api.adminSetUserPlan({ token, userId: v.userId, plan: v.plan }),
       )(),
   });
+  const resetUserPassword = useMutation({
+    mutationFn: async (v: { userId: number; newPassword: string }) =>
+      await wrap(() =>
+        api.adminResetUserPassword({
+          token,
+          userId: v.userId,
+          newPassword: v.newPassword,
+        }),
+      )(),
+  });
   const handleSupport = useMutation({
     mutationFn: async (v: { id: number; status: "nouveau" | "traite" }) =>
       await wrap(() => api.adminHandleSupportMessage({ token, id: v.id, status: v.status }))(),
@@ -2383,7 +3007,7 @@ function AdminPanel({ token }: { token: string }) {
                   {u.discordId && (
                     <span className="flex items-center gap-1.5">
                       <img
-                        src={discordAvatarUrl(u.discordId, u.discordAvatar)}
+                        src={profileAvatarUrl(u)}
                         alt=""
                         className="h-4 w-4 rounded-full"
                       />
@@ -2396,6 +3020,13 @@ function AdminPanel({ token }: { token: string }) {
                   current={u.currentPlan}
                   disabled={setUserPlan.isPending}
                   onApply={(plan) => setUserPlan.mutate({ userId: u.id, plan })}
+                />
+                <AdminUserPasswordForm
+                  userId={u.id}
+                  disabled={resetUserPassword.isPending}
+                  onApply={(newPassword) =>
+                    resetUserPassword.mutate({ userId: u.id, newPassword })
+                  }
                 />
               </li>
             ))}
