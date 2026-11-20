@@ -149,6 +149,11 @@ function publicUser(user: AuthedUser) {
     discordId: user.discordId ?? null,
     discordUsername: user.discordUsername ?? "",
     discordAvatar: user.discordAvatar ?? "",
+    bio: user.bio ?? "",
+    avatarUrl: user.avatarUrl ?? "",
+    usernameChangedAt: user.usernameChangedAt
+      ? user.usernameChangedAt.toISOString()
+      : null,
   };
 }
 
@@ -331,6 +336,9 @@ const userObj = z.object({
   discordId: z.string().nullable(),
   discordUsername: z.string(),
   discordAvatar: z.string(),
+  bio: z.string(),
+  avatarUrl: z.string(),
+  usernameChangedAt: z.string().nullable(),
 });
 
 // ---------------------------------------------------------------------------
@@ -543,6 +551,72 @@ export const Actions = {
     },
   }),
 
+  requestResetCode: defineAction({
+    description:
+      "Generates a 6-digit password-reset code for an EXISTING account and RETURNS it to the client so the page can show it on screen (same no-e-mail flow as the signup code, fix3): no e-mail is sent. The code is stored hashed in its own reset_codes table (never in verification_codes, so a signup code can never reset a password), with a 10-minute expiry and a 30-second cooldown per address. Refuses an e-mail with no account ('Aucun compte avec cet e-mail.'). The old password is never sent back — it is hashed and cannot be recovered.",
+    request: z.object({ email: z.string().max(200) }),
+    response: sendResponse,
+    privileged: [privileged.randomCode, privileged.sha256],
+    async handler(ctx, args): Promise<SendResult> {
+      const db = ctx.db<typeof schema>();
+      const email = args.email.trim().toLowerCase();
+      if (!EMAIL_RE.test(email)) {
+        return { ok: false, error: "Cette adresse e-mail n'est pas valide." };
+      }
+      const existing = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.email, email))
+        .limit(1);
+      if (!existing[0]) {
+        return { ok: false, error: "Aucun compte avec cet e-mail." };
+      }
+      // Anti-spam : un seul code toutes les 30 secondes pour cette adresse.
+      const recentCodes = await db
+        .select()
+        .from(schema.resetCodes)
+        .where(eq(schema.resetCodes.email, email))
+        .orderBy(desc(schema.resetCodes.id))
+        .limit(1);
+      const lastCode = recentCodes[0];
+      if (lastCode && Date.now() - lastCode.createdAt.getTime() < RESEND_COOLDOWN_MS) {
+        return {
+          ok: false,
+          error: "Tu dois attendre 30 secondes avant de renvoyer un code.",
+        };
+      }
+      const { code } = await ctx.executePrivileged(privileged.randomCode, {});
+      const insertedCodes = await db
+        .insert(schema.resetCodes)
+        .values({
+          email,
+          codeHash: await sha(ctx, code),
+          expiresAt: new Date(Date.now() + CODE_TTL_MS),
+        })
+        .returning();
+      const codeRow = insertedCodes[0];
+      if (!codeRow) {
+        return { ok: false, error: "La création du code a échoué. Réessaie." };
+      }
+      // Un seul code actif par e-mail : tout ancien code encore en attente
+      // est invalidé APRÈS la création du nouveau.
+      await db
+        .update(schema.resetCodes)
+        .set({ usedAt: new Date() })
+        .where(
+          and(
+            eq(schema.resetCodes.email, email),
+            isNull(schema.resetCodes.usedAt),
+            ne(schema.resetCodes.id, codeRow.id),
+          ),
+        );
+      // Pas d'e-mail : le code est renvoyé au client, qui l'affiche à
+      // l'écran (comme pour l'inscription). L'ancien mot de passe n'est
+      // jamais renvoyé : il est haché, on ne peut pas le retrouver.
+      return { ok: true, code };
+    },
+  }),
+
   markCodeEmailDelivered: defineAction({
     description:
       "Marks a signup-code e-mail delivery as sent (envoye) or failed (echec) in the delivery tracking table. The SMTP send in requestSignupCode already marks the row from its own result; this action remains available to correct a delivery status.",
@@ -719,6 +793,200 @@ export const Actions = {
       const token = await createSession(ctx, db, user.id);
       ctx.invalidateQueries();
       return { ok: true, token, user: publicUser(user) };
+    },
+  }),
+
+  resetPassword: defineAction({
+    description:
+      "Resets the password of an existing account after verifying the 6-digit reset code from requestResetCode (hashed, 10-minute expiry, 5 attempts max). The new password follows the same rules as signup (8 to 12 characters, 1 to 5 digits) and is stored hashed. The old password is never revealed or returned. All of the user's sessions are closed, so they must log in again with the new password.",
+    request: z.object({
+      email: z.string().max(200),
+      code: z.string().max(20),
+      newPassword: z.string().min(1).max(100),
+    }),
+    response: okResponse,
+    privileged: [privileged.sha256, privileged.hashNewPassword],
+    async handler(ctx, args): Promise<OkResult> {
+      const db = ctx.db<typeof schema>();
+      const email = args.email.trim().toLowerCase();
+      const typedCode = args.code.trim();
+      if (!EMAIL_RE.test(email)) {
+        return { ok: false, error: "Cette adresse e-mail n'est pas valide." };
+      }
+      if (!/^[0-9]{6}$/.test(typedCode)) {
+        return { ok: false, error: "Ce code n'est pas le bon. Vérifie et réessaie." };
+      }
+      // Règles du mot de passe, vérifiées AVANT le code pour ne pas brûler
+      // un essai de code quand seul le mot de passe est mauvais :
+      // entre 8 et 12 caractères, avec 1 à 5 chiffres.
+      if (args.newPassword.length < 8 || args.newPassword.length > 12) {
+        return {
+          ok: false,
+          error: "Le mot de passe doit faire entre 8 et 12 caractères.",
+        };
+      }
+      const digitCount = (args.newPassword.match(/[0-9]/g) ?? []).length;
+      if (digitCount < 1 || digitCount > 5) {
+        return {
+          ok: false,
+          error: "Le mot de passe doit contenir entre 1 et 5 chiffres.",
+        };
+      }
+      const rows = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.email, email))
+        .limit(1);
+      const user = rows[0];
+      if (!user) return { ok: false, error: "Aucun compte avec cet e-mail." };
+      const codes = await db
+        .select()
+        .from(schema.resetCodes)
+        .where(
+          and(
+            eq(schema.resetCodes.email, email),
+            isNull(schema.resetCodes.usedAt),
+          ),
+        )
+        .orderBy(desc(schema.resetCodes.id))
+        .limit(1);
+      const codeRow = codes[0];
+      if (!codeRow) {
+        return { ok: false, error: "Aucun code en attente pour cet e-mail. Redemande un code." };
+      }
+      if (codeRow.expiresAt.getTime() <= Date.now()) {
+        return { ok: false, error: "Ce code a expiré (10 minutes). Redemande un code." };
+      }
+      if (codeRow.attempts >= 5) {
+        return { ok: false, error: "Trop d'essais avec ce code. Redemande un code." };
+      }
+      if ((await sha(ctx, typedCode)) !== codeRow.codeHash) {
+        await db
+          .update(schema.resetCodes)
+          .set({ attempts: codeRow.attempts + 1 })
+          .where(eq(schema.resetCodes.id, codeRow.id));
+        return { ok: false, error: "Ce code n'est pas le bon. Vérifie et réessaie." };
+      }
+      await db
+        .update(schema.resetCodes)
+        .set({ usedAt: new Date() })
+        .where(eq(schema.resetCodes.id, codeRow.id));
+      // Défense en profondeur : après un changement réussi, aucun autre
+      // code en attente pour cet e-mail ne reste utilisable.
+      await db
+        .update(schema.resetCodes)
+        .set({ usedAt: new Date() })
+        .where(
+          and(
+            eq(schema.resetCodes.email, email),
+            isNull(schema.resetCodes.usedAt),
+          ),
+        );
+      const { hash, salt } = await ctx.executePrivileged(privileged.hashNewPassword, {
+        password: args.newPassword,
+      });
+      await db
+        .update(schema.users)
+        .set({ passwordHash: hash, passwordSalt: salt })
+        .where(eq(schema.users.id, user.id));
+      // Le mot de passe a changé : toutes les sessions du compte sont
+      // fermées, il faudra se reconnecter avec le nouveau mot de passe.
+      await db.delete(schema.sessions).where(eq(schema.sessions.userId, user.id));
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  updateProfile: defineAction({
+    description:
+      "Lets the logged-in user edit their profile: free-text bio (500 characters max), profile picture by image address (https://, empty to clear), and username (2 to 30 characters, unique). The username can only change ONCE A WEEK: the date of the last change is stored (username_changed_at) and a change less than 7 days after the previous one is refused server-side ('Tu as déjà changé ton pseudo cette semaine.'). Returns the updated user.",
+    request: z.object({
+      token: z.string().min(1),
+      bio: z.string().max(500).optional(),
+      avatarUrl: z.string().max(500).optional(),
+      username: z.string().max(200).optional(),
+    }),
+    response: z.union([
+      z.object({ ok: z.literal(true), user: userObj }),
+      errorResponse,
+    ]),
+    privileged: SHA,
+    async handler(
+      ctx,
+      args,
+    ): Promise<
+      | { ok: true; user: ReturnType<typeof publicUser> }
+      | { ok: false; error: string }
+    > {
+      const db = ctx.db<typeof schema>();
+      const user = await requireUser(ctx, db, args.token);
+      if (!user) return { ok: false, error: "Tu n'es plus connecté. Reconnecte-toi." };
+      const patch: {
+        bio?: string;
+        avatarUrl?: string;
+        username?: string;
+        usernameChangedAt?: Date;
+      } = {};
+      if (args.bio !== undefined) {
+        patch.bio = args.bio.trim().slice(0, 500);
+      }
+      if (args.avatarUrl !== undefined) {
+        const url = args.avatarUrl.trim();
+        if (url && !url.startsWith("https://")) {
+          return {
+            ok: false,
+            error: "L'adresse de l'image doit commencer par https://",
+          };
+        }
+        patch.avatarUrl = url;
+      }
+      if (args.username !== undefined) {
+        const name = args.username.trim();
+        if (name !== user.username) {
+          if (name.length < 2 || name.length > 30) {
+            return {
+              ok: false,
+              error: "Ton pseudo doit faire entre 2 et 30 caractères.",
+            };
+          }
+          // Cooldown d'une semaine, appliqué CÔTÉ SERVEUR : un pseudo
+          // changé il y a moins de 7 jours ne peut pas être changé à
+          // nouveau. La date du dernier changement est stockée en base.
+          const last = user.usernameChangedAt
+            ? user.usernameChangedAt.getTime()
+            : 0;
+          if (Date.now() - last < 7 * DAY_MS) {
+            return {
+              ok: false,
+              error: "Tu as déjà changé ton pseudo cette semaine.",
+            };
+          }
+          const taken = await db
+            .select()
+            .from(schema.users)
+            .where(eq(schema.users.username, name))
+            .limit(1);
+          if (taken[0]) {
+            return {
+              ok: false,
+              error: "Ce pseudo est déjà pris. Choisis-en un autre.",
+            };
+          }
+          patch.username = name;
+          patch.usernameChangedAt = new Date();
+        }
+      }
+      if (Object.keys(patch).length === 0) {
+        return { ok: true, user: publicUser(user) };
+      }
+      const updated = await db
+        .update(schema.users)
+        .set(patch)
+        .where(eq(schema.users.id, user.id))
+        .returning();
+      const fresh = updated[0] ?? user;
+      ctx.invalidateQueries();
+      return { ok: true, user: publicUser(fresh) };
     },
   }),
 
@@ -1706,6 +1974,54 @@ export const Actions = {
         startsAt: new Date(now),
         endsAt: new Date(now + days * DAY_MS),
       });
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  adminResetUserPassword: defineAction({
+    description:
+      "Patron only: sets a NEW password for a user (same rules as signup: 8 to 12 characters, 1 to 5 digits). The old password is NEVER shown or returned — it is hashed with scrypt and cannot be recovered; only a new password can be set. The user's sessions are closed, so they must log in again with the new password. This is the legitimate alternative to 'seeing' a user's password, which is impossible.",
+    request: z.object({
+      token: z.string().min(1),
+      userId: z.number().int().positive(),
+      newPassword: z.string().min(1).max(100),
+    }),
+    response: okResponse,
+    privileged: [privileged.sha256, privileged.hashNewPassword],
+    async handler(ctx, args): Promise<OkResult> {
+      const db = ctx.db<typeof schema>();
+      const patron = await requirePatron(ctx, db, args.token);
+      if (!patron) return { ok: false, error: "Réservé au Patron." };
+      if (args.newPassword.length < 8 || args.newPassword.length > 12) {
+        return {
+          ok: false,
+          error: "Le mot de passe doit faire entre 8 et 12 caractères.",
+        };
+      }
+      const digitCount = (args.newPassword.match(/[0-9]/g) ?? []).length;
+      if (digitCount < 1 || digitCount > 5) {
+        return {
+          ok: false,
+          error: "Le mot de passe doit contenir entre 1 et 5 chiffres.",
+        };
+      }
+      const targets = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.id, args.userId))
+        .limit(1);
+      if (!targets[0]) return { ok: false, error: "Utilisateur introuvable." };
+      const { hash, salt } = await ctx.executePrivileged(privileged.hashNewPassword, {
+        password: args.newPassword,
+      });
+      await db
+        .update(schema.users)
+        .set({ passwordHash: hash, passwordSalt: salt })
+        .where(eq(schema.users.id, args.userId));
+      // Le mot de passe a changé : toutes les sessions du compte sont
+      // fermées, il faudra se reconnecter avec le nouveau mot de passe.
+      await db.delete(schema.sessions).where(eq(schema.sessions.userId, args.userId));
       ctx.invalidateQueries();
       return { ok: true };
     },
