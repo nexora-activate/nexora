@@ -3,6 +3,10 @@
 // Tables:
 //   users              — real accounts (e-mail + scrypt-hashed password)
 //   verification_codes — 6-digit signup codes, hashed, 10-minute expiry
+//   reset_codes        — 6-digit password-reset codes, hashed, 10-minute
+//                        expiry (separate table from verification_codes so
+//                        a signup code can never reset a password, and a
+//                        reset code can never create an account)
 //   sessions           — login sessions (token stored hashed)
 //   server_requests    — Discord server creation requests (Démo / Premium)
 //   bot_subscriptions  — sniko bot activations (24 h / 3 months / 1 year)
@@ -44,6 +48,12 @@ export const users = pgTable("users", {
   discordId: text("discord_id"),
   discordUsername: text("discord_username").notNull().default(""),
   discordAvatar: text("discord_avatar").notNull().default(""),
+  // Profil modifiable par l'utilisateur : biographie libre, photo de
+  // profil par adresse d'image, et date du dernier changement de pseudo
+  // (NULL = jamais changé : le premier changement est toujours permis).
+  bio: text("bio").notNull().default(""),
+  avatarUrl: text("avatar_url").notNull().default(""),
+  usernameChangedAt: timestamp("username_changed_at", { mode: "date" }),
   createdAt: timestamp("created_at", { mode: "date" })
     .notNull()
     .$defaultFn(() => new Date()),
@@ -76,6 +86,18 @@ export const discordLoginCodes = pgTable("discord_login_codes", {
 });
 
 export const verificationCodes = pgTable("verification_codes", {
+  id: serial("id").primaryKey(),
+  email: text("email").notNull(),
+  codeHash: text("code_hash").notNull(),
+  expiresAt: timestamp("expires_at", { mode: "date" }).notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  usedAt: timestamp("used_at", { mode: "date" }),
+  createdAt: timestamp("created_at", { mode: "date" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+export const resetCodes = pgTable("reset_codes", {
   id: serial("id").primaryKey(),
   email: text("email").notNull(),
   codeHash: text("code_hash").notNull(),
