@@ -34,7 +34,7 @@
 // Users carry discord_id / discord_username / discord_avatar once their
 // Discord account is linked (with their explicit confirmation).
 
-import { integer, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { boolean, integer, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
@@ -42,9 +42,19 @@ export const users = pgTable("users", {
   email: text("email").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
   passwordSalt: text("password_salt").notNull(),
-  role: text("role", { enum: ["membre", "patron"] })
+  // Rôle du compte : membre par défaut ; patron (réservé à
+  // isaac.201294dz@gmail.com, voir register) ; moderateur / moderatrice :
+  // modérateurs du site, nommés par le Patron — ils voient les comptes et
+  // peuvent les bannir, mais ne changent ni mots de passe, ni offres, ni
+  // permissions. Le rôle est un simple texte en base (pas d'enum natif),
+  // comme depuis la migration 0002.
+  role: text("role", { enum: ["membre", "patron", "moderateur", "moderatrice"] })
     .notNull()
     .default("membre"),
+  // Compte banni par le Patron ou un modérateur : il ne peut plus se
+  // connecter (ni par e-mail ni par Discord) et toutes ses sessions
+  // sont fermées au moment du ban.
+  banned: boolean("banned").notNull().default(false),
   discordId: text("discord_id"),
   discordUsername: text("discord_username").notNull().default(""),
   discordAvatar: text("discord_avatar").notNull().default(""),
