@@ -1758,7 +1758,7 @@ function Dashboard({ token, user }: { token: string; user: User }) {
   const i18n = useI18n();
   const { t, te, fmtDate } = i18n;
   const queryClient = useQueryClient();
-  const [tab, setTab] = useState<"accueil" | "serveurs" | "bot" | "admin">("accueil");
+  const [tab, setTab] = useState<"accueil" | "serveurs" | "bot" | "admin" | "moderation">("accueil");
   const [view, setView] = useState<"main" | "support">("main");
   const [menuOpen, setMenuOpen] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
@@ -1852,6 +1852,10 @@ function Dashboard({ token, user }: { token: string; user: User }) {
   const premiumUnlocked = mine.data?.premiumUnlocked ?? false;
   const currentPlan = mine.data?.currentPlan ?? "gratuit";
   const isPatron = user.role === "patron";
+  // Modération du site : modérateur, modératrice ou Patron — ils voient
+  // l'onglet « Modération » et peuvent bannir des comptes.
+  const isModerator =
+    user.role === "moderateur" || user.role === "moderatrice" || isPatron;
 
   return (
     <div className="w-full px-3 pb-12 sm:px-5 lg:mx-auto lg:max-w-6xl">
@@ -1891,6 +1895,11 @@ function Dashboard({ token, user }: { token: string; user: User }) {
               {isPatron && (
                 <span className="ml-2 rounded-full bg-[#f0b232] px-2 py-0.5 text-xs font-black text-black">
                   {t("patronBadge")}
+                </span>
+              )}
+              {(user.role === "moderateur" || user.role === "moderatrice") && (
+                <span className="ml-2 rounded-full bg-[#7c5cff] px-2 py-0.5 text-xs font-black text-white">
+                  {user.role === "moderatrice" ? t("moderatriceBadge") : t("moderatorBadge")}
                 </span>
               )}
               <span
@@ -1986,6 +1995,19 @@ function Dashboard({ token, user }: { token: string; user: User }) {
                     go: () => {
                       setView("main");
                       setTab("admin" as const);
+                    },
+                  },
+                ]
+              : []),
+            ...(isModerator
+              ? [
+                  {
+                    id: "moderation",
+                    label: t("tabModeration"),
+                    active: view === "main" && tab === "moderation",
+                    go: () => {
+                      setView("main");
+                      setTab("moderation" as const);
                     },
                   },
                 ]
@@ -2497,6 +2519,9 @@ function Dashboard({ token, user }: { token: string; user: User }) {
 
           {/* ------------------------------- ADMIN ------------------------------- */}
           {tab === "admin" && isPatron && <AdminPanel token={token} />}
+
+          {/* ---------------------------- MODÉRATION ----------------------------- */}
+          {tab === "moderation" && isModerator && <ModerationPanel token={token} />}
         </>
       )}
     </div>
@@ -2561,6 +2586,69 @@ function AdminUserPlanForm({
         className="rounded-lg bg-white px-3 py-2 text-xs font-bold text-black disabled:opacity-50"
       >
         {t("adminPlanSet")}
+      </button>
+    </div>
+  );
+}
+
+// « Donner des permissions » dans la carte de chaque utilisateur : le
+// Patron choisit Utilisateur / Modérateur site / Modératrice site puis
+// « Appliquer » appelle adminSetUserRole. Jamais affiché pour un Patron
+// — son rôle ne se change pas ici (le serveur refuserait aussi).
+function AdminUserRoleForm({
+  userId,
+  current,
+  disabled,
+  onApply,
+}: {
+  userId: number;
+  current: "membre" | "moderateur" | "moderatrice";
+  disabled: boolean;
+  onApply: (siteRole: "membre" | "moderateur" | "moderatrice") => void;
+}) {
+  const i18n = useI18n();
+  const { t } = i18n;
+  const [siteRole, setSiteRole] = useState(current);
+  useEffect(() => {
+    setSiteRole(current);
+  }, [current]);
+  const roles: ("membre" | "moderateur" | "moderatrice")[] = [
+    "membre",
+    "moderateur",
+    "moderatrice",
+  ];
+  const roleLabel = (r: "membre" | "moderateur" | "moderatrice") =>
+    r === "membre"
+      ? t("roleUser")
+      : r === "moderateur"
+        ? t("roleModerator")
+        : t("roleModeratrice");
+  return (
+    <div className="mt-2.5 flex flex-wrap items-center gap-2">
+      <label htmlFor={`admin-role-${userId}`} className="text-sm font-bold text-[var(--dim)]">
+        {t("givePermissions")}
+      </label>
+      <select
+        id={`admin-role-${userId}`}
+        value={siteRole}
+        onChange={(e) =>
+          setSiteRole(e.target.value as "membre" | "moderateur" | "moderatrice")
+        }
+        className="rounded-lg border border-[var(--border)] bg-[#0a0a0c] px-3 py-2 text-sm font-bold text-[var(--text)]"
+      >
+        {roles.map((r) => (
+          <option key={r} value={r}>
+            {roleLabel(r)}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        disabled={disabled || siteRole === current}
+        onClick={() => onApply(siteRole)}
+        className="rounded-lg bg-white px-3 py-2 text-xs font-bold text-black disabled:opacity-50"
+      >
+        {t("permissionsSet")}
       </button>
     </div>
   );
@@ -2899,6 +2987,18 @@ function AdminPanel({ token }: { token: string }) {
     mutationFn: async (v: { userId: number; role: "membre" | "patron" }) =>
       await wrap(() => api.adminSetRole({ token, userId: v.userId, role: v.role }))(),
   });
+  // Modération du site : le Patron donne / retire le rôle Modérateur
+  // site ou Modératrice site (adminSetUserRole). Le rôle Patron ne passe
+  // jamais par ici.
+  const setUserRole = useMutation({
+    mutationFn: async (v: {
+      userId: number;
+      siteRole: "membre" | "moderateur" | "moderatrice";
+    }) =>
+      await wrap(() =>
+        api.adminSetUserRole({ token, userId: v.userId, siteRole: v.siteRole }),
+      )(),
+  });
   const setUserPlan = useMutation({
     mutationFn: async (v: {
       userId: number;
@@ -2971,6 +3071,16 @@ function AdminPanel({ token }: { token: string }) {
                         {t("patronBadge")}
                       </span>
                     )}
+                    {(u.role === "moderateur" || u.role === "moderatrice") && (
+                      <span className="ml-2 rounded-full bg-[#7c5cff] px-2 py-0.5 text-xs font-black text-white">
+                        {u.role === "moderatrice" ? t("moderatriceBadge") : t("moderatorBadge")}
+                      </span>
+                    )}
+                    {u.banned && (
+                      <span className="ml-2 rounded-full bg-[#e5484d] px-2 py-0.5 text-xs font-black text-white">
+                        {t("bannedBadge")}
+                      </span>
+                    )}
                   </p>
                   {u.role === "patron" ? (
                     <button
@@ -3021,6 +3131,14 @@ function AdminPanel({ token }: { token: string }) {
                   disabled={setUserPlan.isPending}
                   onApply={(plan) => setUserPlan.mutate({ userId: u.id, plan })}
                 />
+                {u.role !== "patron" && (
+                  <AdminUserRoleForm
+                    userId={u.id}
+                    current={u.role as "membre" | "moderateur" | "moderatrice"}
+                    disabled={setUserRole.isPending}
+                    onApply={(siteRole) => setUserRole.mutate({ userId: u.id, siteRole })}
+                  />
+                )}
                 <AdminUserPasswordForm
                   userId={u.id}
                   disabled={resetUserPassword.isPending}
@@ -3227,6 +3345,148 @@ function AdminPanel({ token }: { token: string }) {
       {/* Connexion Discord + API du bot, puis statut base de données */}
       <AdminDiscordConfig token={token} />
       <AdminDatabaseStatus token={token} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tableau de bord Modération (modérateur, modératrice, Patron)
+// ---------------------------------------------------------------------------
+//
+// Le modérateur voit TOUS les comptes (pseudo, e-mail, offre, Discord,
+// date d'inscription, rôle, banni) et peut bannir / débannir. Il ne voit
+// PAS : changer le mot de passe, changer les offres, donner des
+// permissions, donner/retirer Patron — ces contrôles restent dans le
+// tableau Patron uniquement. Un modérateur ne peut pas bannir un autre
+// modérateur ni un Patron (le serveur refuse) ; le Patron, lui, voit cet
+// onglet en plus du tableau Patron.
+function ModerationPanel({ token }: { token: string }) {
+  const i18n = useI18n();
+  const { t, te, fmtDate } = i18n;
+  const queryClient = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const users = useQuery({
+    queryKey: ["moderation", "users", token],
+    queryFn: () => api.moderatorListUsers({ token }),
+  });
+
+  const refreshMod = () => {
+    void queryClient.invalidateQueries({ queryKey: ["moderation"] });
+    void queryClient.invalidateQueries({ queryKey: ["admin"] });
+  };
+
+  const setBanned = useMutation({
+    mutationFn: async (v: { userId: number; banned: boolean }) => {
+      setError(null);
+      setNotice(null);
+      try {
+        const res = await api.moderatorSetUserBanned({
+          token,
+          userId: v.userId,
+          banned: v.banned,
+        });
+        if (!res.ok) setError(te(res.error ?? t("actionRefused")));
+        else setNotice(t(v.banned ? "bannedDone" : "unbannedDone"));
+        refreshMod();
+      } catch {
+        setError(t("genericError"));
+      }
+    },
+  });
+
+  const smallBtn =
+    "rounded-lg px-3 py-2 text-xs font-bold text-white disabled:opacity-50";
+
+  return (
+    <div className="mt-5 space-y-4">
+      <h2 className="text-2xl font-black">{t("modDashboard")}</h2>
+      <p className="text-sm text-[var(--dim)]">{t("modIntro")}</p>
+      <ErrorBox message={error} />
+      {notice && (
+        <p className="rounded-xl bg-[#23a55a]/15 px-4 py-3 text-sm font-medium text-[#3fd68c]">
+          {notice}
+        </p>
+      )}
+
+      <div className="rounded-2xl bg-[var(--surface)] p-5">
+        <h3 className="text-lg font-extrabold">{t("adminUsersTitle")}</h3>
+        {users.isPending ? (
+          <p className="mt-2 text-sm text-[var(--dim)]">{t("loading")}</p>
+        ) : (users.data?.users.length ?? 0) === 0 ? (
+          <p className="mt-2 text-sm text-[var(--dim)]">{t("adminNoUsers")}</p>
+        ) : (
+          <ul className="mt-3 space-y-3 lg:grid lg:grid-cols-2 lg:items-start lg:gap-3 lg:space-y-0">
+            {users.data?.users.map((u) => (
+              <li key={u.id} className="rounded-2xl bg-[#0a0a0c] px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-bold">
+                    {displayName(u, i18n)}
+                    {u.role === "patron" && (
+                      <span className="ml-2 rounded-full bg-[#f0b232] px-2 py-0.5 text-xs font-black text-black">
+                        {t("patronBadge")}
+                      </span>
+                    )}
+                    {(u.role === "moderateur" || u.role === "moderatrice") && (
+                      <span className="ml-2 rounded-full bg-[#7c5cff] px-2 py-0.5 text-xs font-black text-white">
+                        {u.role === "moderatrice" ? t("moderatriceBadge") : t("moderatorBadge")}
+                      </span>
+                    )}
+                    {u.banned && (
+                      <span className="ml-2 rounded-full bg-[#e5484d] px-2 py-0.5 text-xs font-black text-white">
+                        {t("bannedBadge")}
+                      </span>
+                    )}
+                  </p>
+                  {u.banned ? (
+                    <button
+                      type="button"
+                      disabled={setBanned.isPending}
+                      onClick={() => setBanned.mutate({ userId: u.id, banned: false })}
+                      className={`${smallBtn} bg-[#23a55a]`}
+                    >
+                      {t("unbanUser")}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={setBanned.isPending}
+                      onClick={() => setBanned.mutate({ userId: u.id, banned: true })}
+                      className={`${smallBtn} bg-[#e5484d]`}
+                    >
+                      {t("banUser")}
+                    </button>
+                  )}
+                </div>
+                <p className="mt-1 text-sm text-[var(--dim)]">
+                  {u.email} — {t("registeredOn", { date: fmtDate(u.createdAt) })}
+                </p>
+                <p className="mt-1.5 flex flex-wrap items-center gap-2 text-sm text-[var(--dim)]">
+                  <span>
+                    {t("yourPlan")} :{" "}
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs font-black ${PLAN_BADGE_CLS[u.currentPlan] ?? "bg-[#33333a] text-white"}`}
+                    >
+                      {planLabel(u.currentPlan, i18n)}
+                    </span>
+                  </span>
+                  {u.discordId && (
+                    <span className="flex items-center gap-1.5">
+                      <img
+                        src={profileAvatarUrl(u)}
+                        alt=""
+                        className="h-4 w-4 rounded-full"
+                      />
+                      <span className="font-bold text-white">@{u.discordUsername}</span>
+                    </span>
+                  )}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
